@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>{% block title %}TickTick{% endblock %}</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v={{ static_v }}">
   {# resolve theme before first paint to avoid a flash (tri-state: system|light|dark) #}
   <script>
     (function () {
@@ -14,7 +14,7 @@
       document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
     })();
   </script>
-  <script src="/static/app.js" defer></script>
+  <script src="/static/app.js?v={{ static_v }}" defer></script>
 </head>
 <body>
   {% import "_icons.html" as ic %}

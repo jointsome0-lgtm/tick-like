@@ -30,6 +30,20 @@ log = logging.getLogger("activity_ledger")
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
+
+def _static_version() -> str:
+    """Cache-busting token = newest mtime of the assets we hand-edit, so a deploy
+    never serves stale CSS/JS. StaticFiles sends no Cache-Control, so browsers
+    cache heuristically; bumping ?v= on the /static links forces a refetch."""
+    static_dir = BASE_DIR / "static"
+    try:
+        return str(int(max(
+            (static_dir / "style.css").stat().st_mtime,
+            (static_dir / "app.js").stat().st_mtime,
+        )))
+    except OSError:
+        return "0"
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """Startup: migrate + seed once. (Replaces the deprecated on_event hook.)"""
@@ -149,6 +163,7 @@ def countdown_label(date_str: str | None, today: str | None = None) -> str:
 
 
 templates.env.globals.update(
+    static_v=_static_version(),
     avatar=item_avatar,
     status_glyph=status_glyph,
     status_desc=status_desc,
