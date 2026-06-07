@@ -12,6 +12,7 @@ only, our own styling/assets (sec7.3).
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from datetime import date as _date, timedelta
 from pathlib import Path
 from urllib.parse import quote, urlparse
@@ -29,7 +30,27 @@ log = logging.getLogger("activity_ledger")
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
-app = FastAPI(title="Activity Ledger")
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Startup: migrate + seed once. (Replaces the deprecated on_event hook.)"""
+    init_db()
+    conn = get_conn()
+    try:
+        created = checkins.seed_if_empty(conn)
+        lists.seed_if_empty(conn)          # Inbox + sample lists (before tasks)
+        tasks.seed_if_empty(conn)          # sample tasks reference seeded lists
+    finally:
+        conn.close()
+    if created:
+        log.info("Seeded %d routine items", created)
+    log.warning(
+        "Activity Ledger has NO AUTH (sec20): serve only on a trusted LAN; "
+        "never expose to the public internet."
+    )
+    yield
+
+
+app = FastAPI(title="Activity Ledger", lifespan=_lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 # Status display metadata (sec16.5): a distinct glyph per status so state reads
@@ -135,24 +156,6 @@ templates.env.globals.update(
     due_label=due_label,
     countdown_label=countdown_label,
 )
-
-
-@app.on_event("startup")
-def _startup() -> None:
-    init_db()
-    conn = get_conn()
-    try:
-        created = checkins.seed_if_empty(conn)
-        lists.seed_if_empty(conn)          # Inbox + sample lists (before tasks)
-        tasks.seed_if_empty(conn)          # sample tasks reference seeded lists
-    finally:
-        conn.close()
-    if created:
-        log.info("Seeded %d routine items", created)
-    log.warning(
-        "Activity Ledger has NO AUTH (sec20): serve only on a trusted LAN; "
-        "never expose to the public internet."
-    )
 
 
 # --- security / validation (sec20, sec13.3) --------------------------------
@@ -281,7 +284,7 @@ def _render_day(request: Request, date: str, nav_active: str, flash: str | None,
         1 for _, items in groups for it in items
         if it["status"] in ("full_done", "light_done")
     )
-    return templates.TemplateResponse(
+    return templates.TemplateResponse(request,
         "today.html",
         {
             "request": request,
@@ -390,7 +393,7 @@ def _render_tasks(request: Request, conn, *, page_title: str, active: str, secti
         "next7_count": tasks.next7_count(conn),
     }
     ctx.update(_selection_ctx(conn, request, sel, month))
-    return templates.TemplateResponse("tasks.html", ctx)
+    return templates.TemplateResponse(request,"tasks.html", ctx)
 
 
 def _habit_rows(conn, today: str) -> list[dict]:
@@ -537,7 +540,7 @@ def get_search(request: Request, q: str = ""):
         results = tasks.search(conn, q) if q else []
     finally:
         conn.close()
-    return templates.TemplateResponse(
+    return templates.TemplateResponse(request,
         "search.html",
         {
             "request": request, "rail": "search", "q": q,
@@ -596,7 +599,7 @@ def get_calendar(request: Request, month: str | None = None):
     first = _date(year, mon, 1)
     prev_first = (first - timedelta(days=1)).replace(day=1)
     next_first = (first.replace(day=28) + timedelta(days=4)).replace(day=1)
-    return templates.TemplateResponse(
+    return templates.TemplateResponse(request,
         "calendar.html",
         {
             "request": request, "rail": "calendar",
@@ -627,7 +630,7 @@ def get_matrix(request: Request):
     finally:
         conn.close()
     quadrants = [{"title": title, "rows": buckets[p]} for p, title in _MATRIX_QUADRANTS]
-    return templates.TemplateResponse(
+    return templates.TemplateResponse(request,
         "matrix.html", {"request": request, "rail": "matrix", "quadrants": quadrants}
     )
 
@@ -640,7 +643,7 @@ def get_focus(request: Request):
         records = focus.recent_sessions(conn)
     finally:
         conn.close()
-    return templates.TemplateResponse(
+    return templates.TemplateResponse(request,
         "focus.html",
         {"request": request, "rail": "focus", "ov": ov, "records": records},
     )
@@ -688,7 +691,7 @@ def get_export(request: Request):
         count = export.event_count(conn)
     finally:
         conn.close()
-    return templates.TemplateResponse(
+    return templates.TemplateResponse(request,
         "export.html",
         {"request": request, "rail": "export",
          "event_count": count, "recent": export.recent_exports()},
@@ -751,7 +754,7 @@ def _render_habits(request: Request, sel=None, month=None, edit=False, flash=Non
             "default_section": (groups[0][0] if groups else items.DEFAULT_GROUP),
         }
         ctx.update(_habit_selection_ctx(conn, request, sel, month, edit))
-        return templates.TemplateResponse("habits.html", ctx)
+        return templates.TemplateResponse(request,"habits.html", ctx)
     finally:
         conn.close()
 
@@ -799,7 +802,7 @@ def get_habit(request: Request, item_id: int, month: str | None = None):
     if ctx is None:
         raise HTTPException(status_code=404, detail="unknown item")
     ctx.update(request=request, rail="habit")
-    return templates.TemplateResponse("habit.html", ctx)
+    return templates.TemplateResponse(request,"habit.html", ctx)
 
 
 def _checkin_state(conn, date: str, item_id: int) -> dict:
@@ -1073,7 +1076,7 @@ def get_items(request: Request, flash: str | None = None):
             groups.append((r["group_name"], bucket))
         bucket.append(r)
     inactive = [r for r in rows if not r["active"]]
-    return templates.TemplateResponse(
+    return templates.TemplateResponse(request,
         "items.html",
         {
             "request": request,
