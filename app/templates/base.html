@@ -5,11 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>{% block title %}TickTick{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
-  {# apply saved theme before first paint to avoid a flash #}
+  {# resolve theme before first paint to avoid a flash (tri-state: system|light|dark) #}
   <script>
     (function () {
-      var t = localStorage.getItem("al-theme") || "light";
-      document.documentElement.setAttribute("data-theme", t);
+      var pref = localStorage.getItem("al-theme") || "system";
+      var dark = pref === "dark" || (pref === "system" && window.matchMedia &&
+        window.matchMedia("(prefers-color-scheme: dark)").matches);
+      document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
     })();
   </script>
   <script src="/static/app.js" defer></script>
@@ -17,6 +19,9 @@
 <body>
   {% import "_icons.html" as ic %}
   {% set R = rail | default('tasks') %}
+  {%- macro theme_toggle(cls, with_label=false, id='') -%}
+<button type="button" {% if id %}id="{{ id }}" {% endif %}class="{{ cls }} theme-toggle" data-pref="system" title="Toggle theme" aria-label="Toggle theme"><span class="ti ti-system">{{ ic.icon('monitor') }}</span><span class="ti ti-light">{{ ic.icon('sun') }}</span><span class="ti ti-dark">{{ ic.icon('moon') }}</span>{% if with_label %}<span>Theme</span>{% endif %}</button>
+  {%- endmacro -%}
   <div class="tt-shell">
     <nav class="rail" aria-label="Sections">
       <span class="rail-avatar" title="Premium account">🙂</span>
@@ -31,7 +36,7 @@
 
       <span class="rail-spacer"></span>
       <div class="rail-foot">
-        <button type="button" class="rail-ico" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">{{ ic.icon('moon') }}</button>
+        {{ theme_toggle('rail-ico', id='theme-toggle') }}
         <a class="rail-ico {% if R == 'export' %}active{% endif %}" href="/export" title="Export">{{ ic.icon('download') }}</a>
         <a class="rail-ico {% if R == 'items' %}active{% endif %}" href="/items" title="Manage">{{ ic.icon('settings') }}</a>
       </div>
@@ -52,6 +57,7 @@
     <a href="/focus" class="nav-link {% if R == 'focus' %}active{% endif %}">{{ ic.icon('focus') }}<span>Focus</span></a>
     <a href="/matrix" class="nav-link {% if R == 'matrix' %}active{% endif %}">{{ ic.icon('matrix') }}<span>Matrix</span></a>
     <a href="/habits" class="nav-link {% if R == 'habit' %}active{% endif %}">{{ ic.icon('habit') }}<span>Habit</span></a>
+    {{ theme_toggle('nav-link', with_label=true) }}
   </nav>
 </body>
 </html>

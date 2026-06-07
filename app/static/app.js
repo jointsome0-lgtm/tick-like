@@ -79,16 +79,36 @@
     }
   });
 
-  // --- theme toggle: flip data-theme + persist --------------------------------
-  const themeBtn = document.getElementById("theme-toggle");
-  if (themeBtn) {
-    themeBtn.addEventListener("click", () => {
-      const cur = document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
-      const next = cur === "dark" ? "light" : "dark";
-      document.documentElement.setAttribute("data-theme", next);
-      try { localStorage.setItem("al-theme", next); } catch (_) {}
-    });
-  }
+  // --- theme: tri-state (system | light | dark); default follows the OS --------
+  (() => {
+    const btns = document.querySelectorAll(".theme-toggle");
+    const mq = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+    const ORDER = ["system", "light", "dark"];
+    const LABEL = { system: "System", light: "Light", dark: "Dark" };
+    const read = () => {
+      const v = localStorage.getItem("al-theme");
+      return ORDER.includes(v) ? v : "system";
+    };
+    const resolve = (p) =>
+      p === "dark" || (p === "system" && mq && mq.matches) ? "dark" : "light";
+    function apply(pref) {
+      document.documentElement.setAttribute("data-theme", resolve(pref));
+      btns.forEach((b) => {
+        b.dataset.pref = pref;
+        b.title = "Theme: " + LABEL[pref];
+        b.setAttribute("aria-label", "Theme: " + LABEL[pref] + " — tap to change");
+      });
+      try { localStorage.setItem("al-theme", pref); } catch (_) {}
+    }
+    btns.forEach((b) => b.addEventListener("click", () =>
+      apply(ORDER[(ORDER.indexOf(read()) + 1) % ORDER.length])));
+    // live-react to OS theme changes while in "system" mode
+    if (mq) {
+      const onChange = () => { if (read() === "system") apply("system"); };
+      mq.addEventListener ? mq.addEventListener("change", onChange) : mq.addListener(onChange);
+    }
+    apply(read());  // sync data-theme + button UI on load
+  })();
 
   // --- Pomodoro / Stopwatch (focus page) --------------------------------------
   (() => {

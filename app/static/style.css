@@ -138,6 +138,13 @@ button { font: inherit; }
 .rail-foot .rail-ico svg { width: 18px; height: 18px; }
 .rail-label { display: none; }   /* icon-only rail, matching TickTick */
 
+/* --- theme toggle (tri-state: system | light | dark) --- */
+.theme-toggle { appearance: none; -webkit-appearance: none; background: none; border: 0; padding: 0; font: inherit; cursor: pointer; }
+.theme-toggle .ti { display: none; }
+.theme-toggle[data-pref="system"] .ti-system,
+.theme-toggle[data-pref="light"]  .ti-light,
+.theme-toggle[data-pref="dark"]   .ti-dark  { display: inline-flex; }
+
 /* --- list sidebar (305px) --- */
 .listbar {
   flex: 0 0 305px; width: 305px;
