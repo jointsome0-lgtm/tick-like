@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% import "_icons.html" as ic %}
+{% block title %}Calendar - TickTick{% endblock %}
+{% block content_class %}wide{% endblock %}
+{% block content %}
+<header class="cal-view-head">
+  <button class="head-btn" title="Toggle sidebar">{{ ic.icon('panel') }}</button>
+  <h1>{{ week_label }}</h1>
+  <a class="head-btn" href="#new-task-cal" title="Add">{{ ic.icon('plus') }}</a>
+  <span class="cal-switch"><a href="/calendar">Month</a><span class="on">Week</span></span>
+  <a class="cal-arrow" href="{{ prev_url }}">{{ ic.icon('chev-left') }}</a>
+  <a class="cal-pillbtn" href="/calendar/week">Today</a>
+  <a class="cal-arrow" href="{{ next_url }}">{{ ic.icon('chev-right') }}</a>
+  <button class="head-btn" title="More">{{ ic.icon('more') }}</button>
+</header>
+
+<div class="cw">
+  <div class="cw-head">
+    <div class="cw-corner"></div>
+    {% for d in days %}
+    <div class="cw-dayhead{% if d.is_today %} today{% endif %}">
+      <span class="cw-dow">{{ d.dow }}</span>
+      <span class="cw-dom">{{ d.dom }}</span>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="cw-allday">
+    <div class="cw-allday-label">all-day</div>
+    {% for d in days %}
+    <div class="cw-allday-cell{% if d.is_today %} today{% endif %}">
+      {% for ev in d.allday %}
+        <span class="cw-chip ev" title="{{ ev.title }}">{% if ev.emoji %}{{ ev.emoji }} {% endif %}{{ ev.title }}</span>
+      {% endfor %}
+      {% for t in d.tasks %}
+        <span class="cw-chip{% if t.kind == 'countdown' %} cd{% elif t.completed %} done{% elif t.priority == 3 %} hi{% elif t.priority == 2 %} med{% endif %}" title="{{ t.title }}">{{ t.title }}</span>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="cw-body" style="--cw-h:{{ grid_h }}px; --cw-hour:{{ hour_px }}px;">
+    <div class="cw-gutter">
+      {% for h in hours %}<span class="cw-hourlabel" style="top:{{ h.top }}px">{{ h.label }}</span>{% endfor %}
+    </div>
+    {% for d in days %}
+    <div class="cw-daycol{% if d.is_today %} today{% endif %}">
+      {% for b in d.blocks %}
+      <a class="cw-block" href="#event-{{ b.event_id }}"
+         style="top:{{ b.top }}px; height:{{ b.height }}px; left:{{ b.left }}%; width:{{ b.width }}%;"
+         title="{{ b.start_time }}{% if b.end_time %}–{{ b.end_time }}{% endif %} {{ b.title }}">
+        <span class="cw-block-time">{{ b.start_time }}</span>
+        <span class="cw-block-title">{% if b.emoji %}{{ b.emoji }} {% endif %}{{ b.title }}</span>
+      </a>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

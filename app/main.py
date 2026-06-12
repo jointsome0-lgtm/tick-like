@@ -23,7 +23,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .db import get_conn, init_db, is_not_future, is_valid_date, today_str
-from .services import checkins, export, focus, items, lists, stats, tasks
+from .services import calendar_events, checkins, export, focus, items, lists, stats, tasks
+from .terminal import setup_terminal, shutdown_terminal
 
 log = logging.getLogger("activity_ledger")
 
@@ -44,6 +45,16 @@ def _static_version() -> str:
     except OSError:
         return "0"
 
+
+class _LazyToken:
+    """`templates.env.globals` is evaluated once at import, so a bare
+    `static_v=_static_version()` would FREEZE the cache-bust token until the next
+    restart — meaning a CSS/JS edit on a running server keeps serving the stale URL.
+    Wrapping it so `{{ static_v }}` re-stats the assets on every render fixes that."""
+
+    def __str__(self) -> str:
+        return _static_version()
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """Startup: migrate + seed once. (Replaces the deprecated on_event hook.)"""
@@ -62,6 +73,7 @@ async def _lifespan(app: FastAPI):
         "never expose to the public internet."
     )
     yield
+    await shutdown_terminal()  # kill any persistent terminal shells on shutdown
 
 
 app = FastAPI(title="Activity Ledger", lifespan=_lifespan)
@@ -163,7 +175,7 @@ def countdown_label(date_str: str | None, today: str | None = None) -> str:
 
 
 templates.env.globals.update(
-    static_v=_static_version(),
+    static_v=_LazyToken(),
     avatar=item_avatar,
     status_glyph=status_glyph,
     status_desc=status_desc,
@@ -171,6 +183,9 @@ templates.env.globals.update(
     due_label=due_label,
     countdown_label=countdown_label,
 )
+
+# Desktop / localhost-only terminal tab (app/terminal.py): PTY ↔ xterm.js over WS.
+setup_terminal(app, templates)
 
 
 # --- security / validation (sec20, sec13.3) --------------------------------
@@ -575,9 +590,22 @@ def _month_grid(conn, year: int, month: int) -> list[list[dict]]:
     grid = _cal.Calendar(firstweekday=6)  # 6 = Sunday
     first_cell = grid.monthdatescalendar(year, month)[0][0]
     days = [first_cell + timedelta(days=i) for i in range(42)]  # 6 weeks, fixed
+    win_start, win_end = days[0].isoformat(), days[-1].isoformat()
     by_date: dict[str, list] = {}
-    for t in tasks.due_between(conn, days[0].isoformat(), days[-1].isoformat()):
-        by_date.setdefault(t["due_date"], []).append(t)
+    # Calendar events first so they sort above tasks in a cell (sec32 §13.6);
+    # occurrences_between already returns all-day-first then by start_time.
+    for o in calendar_events.occurrences_between(conn, win_start, win_end):
+        by_date.setdefault(o["date"], []).append({
+            "title": o["title"], "kind": "event", "emoji": o["emoji"],
+            "all_day": o["all_day"], "start_time": o["start_time"],
+            "end_time": o["end_time"], "completed": False, "priority": 0,
+        })
+    for t in tasks.due_between(conn, win_start, win_end):
+        by_date.setdefault(t["due_date"], []).append({
+            "title": t["title"], "kind": t["kind"], "emoji": None,
+            "all_day": True, "start_time": None, "end_time": None,
+            "completed": t["completed_at"] is not None, "priority": t["priority"],
+        })
     weeks: list[list[dict]] = []
     for w in range(6):
         cells = []
@@ -589,15 +617,7 @@ def _month_grid(conn, year: int, month: int) -> list[list[dict]]:
                 "in_month": d.month == month and d.year == year,
                 "is_today": d == today_d,
                 "month_abbr": d.strftime("%b"),
-                "events": [
-                    {
-                        "title": e["title"],
-                        "kind": e["kind"],
-                        "completed": e["completed_at"] is not None,
-                        "priority": e["priority"],
-                    }
-                    for e in by_date.get(iso, [])
-                ],
+                "events": by_date.get(iso, []),
             })
         weeks.append(cells)
     return weeks
@@ -624,6 +644,111 @@ def get_calendar(request: Request, month: str | None = None):
             "next_url": f"/calendar?month={next_first.strftime('%Y-%m')}",
         },
     )
+
+
+# Timed week grid geometry: a fixed px-per-hour scale the template multiplies by.
+_WEEK_HOUR_PX = 48          # height of one hour row
+_WEEK_MIN_BLOCK_PX = 22     # floor so a 15-min slot stays legible (sec32 §6.1)
+_WEEK_BAND = (6, 23)        # default visible band 06:00–23:00, expands to fit
+
+
+def _week_ctx(conn, anchor: _date) -> dict:
+    """Build the Sunday-start week (firstweekday=6, matching the month grid) that
+    contains `anchor`: 7 day columns, an all-day row (all-day events + due tasks),
+    and the timed grid with overlap columns (sec32 §6/§6.1)."""
+    sun = anchor - timedelta(days=(anchor.weekday() + 1) % 7)  # back to Sunday
+    week_days = [sun + timedelta(days=i) for i in range(7)]
+    start_iso, end_iso = week_days[0].isoformat(), week_days[-1].isoformat()
+    occs = calendar_events.occurrences_between(conn, start_iso, end_iso)
+
+    tasks_by_date: dict[str, list] = {}
+    for t in tasks.due_between(conn, start_iso, end_iso):
+        tasks_by_date.setdefault(t["due_date"], []).append({
+            "title": t["title"], "kind": t["kind"],
+            "completed": t["completed_at"] is not None, "priority": t["priority"],
+        })
+
+    allday: dict[str, list] = {}
+    timed: dict[str, list] = {}
+    for o in occs:
+        (allday if (o["all_day"] or not o["start_time"]) else timed) \
+            .setdefault(o["date"], []).append(o)
+
+    # Visible band: default 06:00–23:00, widened (floor/ceil to the hour) to fit
+    # any earlier/later timed occurrence anywhere in the week.
+    band_start, band_end = _WEEK_BAND[0] * 60, _WEEK_BAND[1] * 60
+    for o in occs:
+        if o["all_day"] or not o["start_time"]:
+            continue
+        s = calendar_events._min_of(o["start_time"])
+        e = calendar_events._min_of(o["end_time"]) or (s + 30)
+        band_start = min(band_start, s // 60 * 60)
+        band_end = max(band_end, -(-e // 60) * 60)  # ceil to the hour
+    band_start = max(0, band_start)
+    band_end = min(24 * 60, max(band_end, band_start + 60))
+    ppm = _WEEK_HOUR_PX / 60.0
+
+    today_iso = today_str()
+    days = []
+    for d in week_days:
+        iso = d.isoformat()
+        blocks = []
+        for o in calendar_events.layout_day(timed.get(iso, [])):
+            top = (o["start_min"] - band_start) * ppm
+            height = max((o["end_min"] - o["start_min"]) * ppm, _WEEK_MIN_BLOCK_PX)
+            blocks.append({
+                "title": o["title"], "emoji": o["emoji"], "event_id": o["event_id"],
+                "start_time": o["start_time"], "end_time": o["end_time"],
+                "top": round(top, 1), "height": round(height, 1),
+                "left": round(o["left"] * 100, 3), "width": round(o["width"] * 100, 3),
+            })
+        days.append({
+            "date": iso, "dow": d.strftime("%a"), "dom": d.day,
+            "is_today": iso == today_iso,
+            "allday": allday.get(iso, []), "tasks": tasks_by_date.get(iso, []),
+            "blocks": blocks,
+        })
+
+    hours = [{"label": f"{h:02d}:00", "top": round((h * 60 - band_start) * ppm, 1)}
+             for h in range(band_start // 60, band_end // 60)]
+    return {
+        "days": days, "hours": hours,
+        "grid_h": int(round((band_end - band_start) * ppm)), "hour_px": _WEEK_HOUR_PX,
+    }
+
+
+def _parse_date(s: str | None) -> _date:
+    """Parse ?date=YYYY-MM-DD, defaulting to today; reject garbage."""
+    if s:
+        try:
+            return _date.fromisoformat(s)
+        except ValueError:
+            pass
+    return _date.fromisoformat(today_str())
+
+
+@app.get("/calendar/week")
+def get_calendar_week(request: Request, date: str | None = None):
+    anchor = _parse_date(date)
+    conn = get_conn()
+    try:
+        ctx = _week_ctx(conn, anchor)
+    finally:
+        conn.close()
+    sun = anchor - timedelta(days=(anchor.weekday() + 1) % 7)
+    last = sun + timedelta(days=6)
+    if sun.month == last.month:
+        label = f"{sun.strftime('%b')} {sun.day}–{last.day}, {sun.year}"
+    elif sun.year == last.year:
+        label = f"{sun.strftime('%b')} {sun.day} – {last.strftime('%b')} {last.day}, {sun.year}"
+    else:
+        label = f"{sun.strftime('%b %-d, %Y')} – {last.strftime('%b %-d, %Y')}"
+    ctx.update({
+        "request": request, "rail": "calendar", "week_label": label,
+        "prev_url": f"/calendar/week?date={(sun - timedelta(days=7)).isoformat()}",
+        "next_url": f"/calendar/week?date={(sun + timedelta(days=7)).isoformat()}",
+    })
+    return templates.TemplateResponse(request, "calendar_week.html", ctx)
 
 
 # Eisenhower quadrants keyed by our priority field (high→urgent+important … none→neither)

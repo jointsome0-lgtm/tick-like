@@ -515,5 +515,146 @@ with TestClient(app) as c:
                follow_redirects=False)
     check("cross-origin POST /export/jsonl -> 403", r.status_code == 403, str(r.status_code))
 
+    # --- Calendar events: recurrence engine + CRUD (M1, sec32 §4/§10) -----------
+    from datetime import date as _d
+    from app.services import calendar_events as ce
+
+    def _rule(**kw):
+        base = {"start_date": None, "end_date": None, "exdates": None,
+                "freq": "once", "byweekday": None, "interval_n": 1}
+        base.update(kw)
+        return base
+
+    # occurs_on — the pure predicate (no DB needed)
+    orbit_r = _rule(start_date="2027-04-07", freq="weekly", byweekday="1010100")  # MWF
+    check("occurs_on: weekly hits its weekday (Wed 04-07)", ce.occurs_on(orbit_r, _d(2027, 4, 7)))
+    check("occurs_on: weekly skips off-weekday (Thu 04-08)", not ce.occurs_on(orbit_r, _d(2027, 4, 8)))
+    check("occurs_on: before start_date excluded (Mon 04-05)", not ce.occurs_on(orbit_r, _d(2027, 4, 5)))
+
+    once_r = _rule(start_date="2027-04-07", freq="once")
+    check("occurs_on: 'once' only on its start_date",
+          ce.occurs_on(once_r, _d(2027, 4, 7)) and not ce.occurs_on(once_r, _d(2027, 4, 8)))
+
+    daily2 = _rule(start_date="2027-04-07", freq="daily", interval_n=2)
+    check("occurs_on: daily interval=2 (04-07 yes / 04-08 no / 04-09 yes)",
+          ce.occurs_on(daily2, _d(2027, 4, 7)) and not ce.occurs_on(daily2, _d(2027, 4, 8))
+          and ce.occurs_on(daily2, _d(2027, 4, 9)))
+
+    biwk = _rule(start_date="2027-04-07", freq="weekly", byweekday="1010100", interval_n=2)
+    check("occurs_on: weekly interval=2 in-week (Fri 04-09 yes)", ce.occurs_on(biwk, _d(2027, 4, 9)))
+    check("occurs_on: weekly interval=2 next week off (Mon 04-12 no)", not ce.occurs_on(biwk, _d(2027, 4, 12)))
+    check("occurs_on: weekly interval=2 two weeks on (Mon 04-19 yes)", ce.occurs_on(biwk, _d(2027, 4, 19)))
+
+    bounded = _rule(start_date="2027-04-07", end_date="2027-04-14", freq="weekly", byweekday="1010100")
+    check("occurs_on: end_date inclusive (Wed 04-14 yes)", ce.occurs_on(bounded, _d(2027, 4, 14)))
+    check("occurs_on: past end_date excluded (Fri 04-16 no)", not ce.occurs_on(bounded, _d(2027, 4, 16)))
+
+    exd = _rule(start_date="2027-04-07", freq="weekly", byweekday="1010100", exdates=["2027-04-09"])
+    check("occurs_on: exdate removes that day only",
+          not ce.occurs_on(exd, _d(2027, 4, 9)) and ce.occurs_on(exd, _d(2027, 4, 7)))
+
+    # layout_day — overlap column-packing (§6.1), pure render geometry, no DB
+    def _occ(st, et=None, all_day=False):
+        return {"all_day": all_day, "start_time": st, "end_time": et, "title": st or "all",
+                "emoji": None, "color": None, "event_id": 0, "list_id": None, "note": None,
+                "date": "2027-04-07"}
+
+    ov = ce.layout_day([_occ("09:00", "10:00"), _occ("09:30", "10:30")])
+    check("layout: two overlapping events → 2 columns", all(o["ncols"] == 2 for o in ov))
+    check("layout: overlapping events get distinct lefts",
+          sorted(round(o["left"], 3) for o in ov) == [0.0, 0.5], str([o["left"] for o in ov]))
+    seq = ce.layout_day([_occ("09:00", "10:00"), _occ("10:00", "11:00")])
+    check("layout: back-to-back events share one full-width column",
+          all(o["ncols"] == 1 and o["width"] == 1.0 for o in seq))
+    tri = ce.layout_day([_occ("09:00", "10:00"), _occ("09:30", "10:30"), _occ("10:00", "11:00")])
+    by_start = {o["start_time"]: o for o in tri}
+    check("layout: transitive cluster packs into 2 columns", all(o["ncols"] == 2 for o in tri))
+    check("layout: a freed column is reused (C takes col 0, B in col 1)",
+          by_start["10:00"]["col"] == 0 and by_start["09:30"]["col"] == 1)
+    nul = ce.layout_day([_occ("09:00"), _occ("09:15", "09:45")])
+    check("layout: NULL end → 30-min block, still collides", all(o["ncols"] == 2 for o in nul))
+    mixed = ce.layout_day([_occ(None, None, all_day=True), _occ("09:00", "10:00")])
+    check("layout: all-day items are dropped from the timed grid",
+          len(mixed) == 1 and mixed[0]["start_time"] == "09:00")
+
+    # occurrences_between + CRUD against the throwaway DB (the §2 synthetic demo fixture)
+    cconn = get_conn()
+    try:
+        check("schema migrated to v5", cconn.execute("PRAGMA user_version").fetchone()[0] == 5)
+        oid = ce.create_event(cconn, "Orbit Drill", start_date="2027-04-07", freq="weekly",
+                              byweekday="1010100", start_time="09:10", end_time="09:55")
+        sid = ce.create_event(cconn, "Signal Lab", start_date="2027-04-07", freq="weekly",
+                              byweekday="0101000", start_time="09:10", end_time="09:55")
+        wk1 = [(o["date"], o["title"]) for o in ce.occurrences_between(cconn, "2027-04-04", "2027-04-10")]
+        wk2 = [(o["date"], o["title"]) for o in ce.occurrences_between(cconn, "2027-04-11", "2027-04-17")]
+        check("§2 week1 expands exactly (Wed Orbit, Thu Signal, Fri Orbit)",
+              wk1 == [("2027-04-07", "Orbit Drill"), ("2027-04-08", "Signal Lab"),
+                      ("2027-04-09", "Orbit Drill")], str(wk1))
+        check("§2 week2 expands exactly (Orbit/Signal/Orbit/Signal/Orbit Mon-Fri)",
+              wk2 == [("2027-04-12", "Orbit Drill"), ("2027-04-13", "Signal Lab"),
+                      ("2027-04-14", "Orbit Drill"), ("2027-04-15", "Signal Lab"),
+                      ("2027-04-16", "Orbit Drill")], str(wk2))
+        check("occurrences merged + time-sorted within a day",
+              all(o["start_time"] == "09:10" for o in ce.occurrences_on(cconn, "2027-04-14")))
+
+        boundary = [o["date"] for o in ce.occurrences_between(cconn, "2027-04-30", "2027-05-06")]
+        check("occurrences cross the month boundary (42-day grid)",
+              "2027-04-30" in boundary and "2027-05-03" in boundary and "2027-05-05" in boundary,
+              str(boundary))
+
+        ce.skip_occurrence(cconn, oid, "2027-04-09")
+        wk1b = [(o["date"], o["title"]) for o in ce.occurrences_between(cconn, "2027-04-04", "2027-04-10")]
+        check("skip removes exactly that occurrence",
+              wk1b == [("2027-04-07", "Orbit Drill"), ("2027-04-08", "Signal Lab")], str(wk1b))
+        ce.unskip_occurrence(cconn, oid, "2027-04-09")
+        check("unskip restores the occurrence",
+              len(ce.occurrences_between(cconn, "2027-04-04", "2027-04-10")) == 3)
+
+        ce.archive_event(cconn, sid)
+        wk2c = [o["title"] for o in ce.occurrences_between(cconn, "2027-04-11", "2027-04-17")]
+        check("archive removes the whole series from reads",
+              wk2c == ["Orbit Drill", "Orbit Drill", "Orbit Drill"], str(wk2c))
+
+        def _rejects(label, fn):
+            try:
+                fn()
+                check(label, False, "no error raised")
+            except ce.CalendarEventError:
+                check(label, True)
+
+        _rejects("reject weekly without weekday mask",
+                 lambda: ce.create_event(cconn, "X", start_date="2027-04-07", freq="weekly"))
+        _rejects("reject malformed start_time",
+                 lambda: ce.create_event(cconn, "X", start_date="2027-04-07", start_time="7:15"))
+        _rejects("reject empty title",
+                 lambda: ce.create_event(cconn, "   ", start_date="2027-04-07", all_day=True))
+        _rejects("reject end_time before start_time",
+                 lambda: ce.create_event(cconn, "X", start_date="2027-04-07",
+                                         start_time="09:55", end_time="09:10"))
+        _rejects("reject end_date before start_date",
+                 lambda: ce.create_event(cconn, "X", start_date="2027-04-07",
+                                         end_date="2027-04-01", all_day=True))
+
+        caltypes = {row["type"] for row in cconn.execute(
+            "SELECT DISTINCT type FROM events WHERE type LIKE 'calendar_%'").fetchall()}
+        check("audit events for create/skip/unskip/archive",
+              {"calendar_event_created", "calendar_occurrence_skipped",
+               "calendar_occurrence_unskipped", "calendar_event_archived"}.issubset(caltypes),
+              str(sorted(caltypes)))
+
+        # read-view routes (M2): the live Orbit Drill series surfaces in both grids
+        rcal = c.get("/calendar?month=2027-04")
+        check("GET /calendar merges event chips", "cm-event ev" in rcal.text and "Orbit Drill" in rcal.text)
+        check("GET /calendar shows the event's time chip", "09:10" in rcal.text)
+        rwk = c.get("/calendar/week?date=2027-04-07")
+        check("GET /calendar/week 200 + grid", rwk.status_code == 200 and "cw-body" in rwk.text)
+        check("week view places timed blocks (Orbit Drill 09:10)",
+              "cw-block" in rwk.text and "Orbit Drill" in rwk.text and "09:10" in rwk.text)
+        check("week view switch links back to month", 'href="/calendar"' in rwk.text)
+        check("week view tolerates a bad ?date (falls back to today)",
+              c.get("/calendar/week?date=not-a-date").status_code == 200)
+    finally:
+        cconn.close()
+
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

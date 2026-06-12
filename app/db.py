@@ -93,7 +93,7 @@ def get_conn() -> sqlite3.Connection:
 
 # --- schema + migrations (sec13.1 / sec13.3) -------------------------------
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _INITIAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS routine_items (
@@ -247,6 +247,46 @@ def _migrate_to_4(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA_V4)
 
 
+# v5 — calendar_events: timed, recurring events for the Calendar week/month views
+# (sec32). The ROW IS THE SERIES; concrete occurrences are expanded on read from the
+# recurrence rule, never materialised. Soft-archived, never hard-deleted, so a series
+# stays joinable to its audit events (sec14.1 / recovery goal sec16.5). Kept SEPARATE
+# from `tasks` on purpose: recurring time-blocks must not pollute the task smart-lists
+# / Matrix and carry no "done" semantics (a class happens, it isn't completed — that's
+# what the Habit tab is for).
+_SCHEMA_V5 = """
+CREATE TABLE IF NOT EXISTS calendar_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  title       TEXT NOT NULL CHECK(length(trim(title)) > 0),
+  emoji       TEXT,
+  list_id     INTEGER REFERENCES lists(id),      -- optional grouping/colour, like tasks
+  note        TEXT,
+
+  all_day     INTEGER NOT NULL DEFAULT 0 CHECK(all_day IN (0,1)),
+  start_time  TEXT,            -- 'HH:MM' local; NULL iff all_day=1
+  end_time    TEXT,            -- 'HH:MM' local; NULL = point-in-time event
+
+  freq        TEXT NOT NULL DEFAULT 'once' CHECK(freq IN ('once','daily','weekly')),
+  byweekday   TEXT,            -- 7-char Mon..Sun bitmask, e.g. '1010100'; used when freq='weekly'
+  interval_n  INTEGER NOT NULL DEFAULT 1 CHECK(interval_n >= 1),  -- every N days/weeks
+  start_date  TEXT NOT NULL,   -- 'YYYY-MM-DD' first eligible date (anchor)
+  end_date    TEXT,            -- 'YYYY-MM-DD' inclusive; NULL = open-ended
+  exdates     TEXT,            -- JSON array of 'YYYY-MM-DD' skipped occurrences
+
+  color       TEXT,            -- optional hex or css class for the block
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT,
+  archived_at TEXT             -- soft-delete the whole series
+);
+
+CREATE INDEX IF NOT EXISTS idx_calevents_start ON calendar_events(start_date);
+"""
+
+
+def _migrate_to_5(conn: sqlite3.Connection) -> None:
+    conn.executescript(_SCHEMA_V5)
+
+
 # Ordered, idempotent steps. A schema change must NEVER require deleting the
 # ledger to upgrade (sec13.3): add a (version, fn) row, never rewrite history.
 _MIGRATIONS = [
@@ -254,6 +294,7 @@ _MIGRATIONS = [
     (2, _migrate_to_2),
     (3, _migrate_to_3),
     (4, _migrate_to_4),
+    (5, _migrate_to_5),
 ]
 
 
