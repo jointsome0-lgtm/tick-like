@@ -22,7 +22,7 @@
     {% for d in days %}
     <div class="cw-allday-cell{% if d.is_today %} today{% endif %}">
       {% for ev in d.allday %}
-        <a class="cw-chip ev" href="{{ self_url }}&ev={{ ev.event_id }}&on={{ ev.date }}" title="{{ ev.title }}">{{ cal.ev_label(ev) }}</a>
+        <a class="cw-chip ev" href="{{ cal.ev_href(self_url, ev.event_id, ev.date) }}" title="{{ ev.title }}">{{ cal.ev_label(ev) }}</a>
       {% endfor %}
       {% for t in d.tasks %}
         <span class="cw-chip{{ cal.chip_class(t) }}" title="{{ t.title }}">{{ t.title }}</span>
@@ -38,7 +38,7 @@
     {% for d in days %}
     <div class="cw-daycol{% if d.is_today %} today{% endif %}">
       {% for b in d.blocks %}
-      <a class="cw-block" href="{{ self_url }}&ev={{ b.event_id }}&on={{ d.date }}"
+      <a class="cw-block" href="{{ cal.ev_href(self_url, b.event_id, d.date) }}"
          style="top:{{ b.top }}px; height:{{ b.height }}px; left:{{ b.left }}%; width:{{ b.width }}%;"
          title="{{ b.start_time }}{% if b.end_time %}–{{ b.end_time }}{% endif %} {{ b.title }}">
         <span class="cw-block-time">{{ b.start_time }}</span>

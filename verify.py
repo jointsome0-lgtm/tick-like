@@ -581,6 +581,13 @@ with TestClient(app) as c:
     # occurrences_between + CRUD against the throwaway DB (the §2 synthetic demo fixture)
     cconn = get_conn()
     try:
+        def _rejects(label, fn):
+            try:
+                fn()
+                check(label, False, "no error raised")
+            except ce.CalendarEventError:
+                check(label, True)
+
         check("schema migrated to v5", cconn.execute("PRAGMA user_version").fetchone()[0] == 5)
         oid = ce.create_event(cconn, "Orbit Drill", start_date="2027-04-07", freq="weekly",
                               byweekday="1010100", start_time="09:10", end_time="09:55")
@@ -619,13 +626,6 @@ with TestClient(app) as c:
         wk2c = [o["title"] for o in ce.occurrences_between(cconn, "2027-04-11", "2027-04-17")]
         check("archive removes the whole series from reads",
               wk2c == ["Orbit Drill", "Orbit Drill", "Orbit Drill"], str(wk2c))
-
-        def _rejects(label, fn):
-            try:
-                fn()
-                check(label, False, "no error raised")
-            except ce.CalendarEventError:
-                check(label, True)
 
         _rejects("reject weekly without weekday mask",
                  lambda: ce.create_event(cconn, "X", start_date="2027-04-07", freq="weekly"))

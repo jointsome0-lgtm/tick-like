@@ -646,14 +646,14 @@ def _event_modal_ctx(conn, self_url: str, ev: str | None, on: str | None) -> dic
 def get_calendar(request: Request, month: str | None = None, ev: str | None = None,
                  on: str | None = None, flash: str | None = None):
     year, mon = _parse_month(month)
-    self_url = f"/calendar?month={year:04d}-{mon:02d}"
+    first = _date(year, mon, 1)
+    self_url = f"/calendar?month={first.strftime('%Y-%m')}"
     conn = get_conn()
     try:
         weeks = _month_grid(conn, year, mon)
         modal = _event_modal_ctx(conn, self_url, ev, on)
     finally:
         conn.close()
-    first = _date(year, mon, 1)
     prev_first = (first - timedelta(days=1)).replace(day=1)
     next_first = (first.replace(day=28) + timedelta(days=4)).replace(day=1)
     return templates.TemplateResponse(request,
@@ -779,6 +779,11 @@ def _wd_mask(wd: list[str]) -> str:
     return "".join("1" if str(i) in wd else "0" for i in range(7))
 
 
+def _events_redirect(return_to: str, flash: str | None = None) -> RedirectResponse:
+    url = _safe_return(return_to, "/calendar")
+    return RedirectResponse(_with_flash(url, flash) if flash else url, status_code=303)
+
+
 @app.post("/calendar/events")
 def post_event_create(
     request: Request,
@@ -805,11 +810,10 @@ def post_event_create(
             end_time=end_time, end_date=end_date, list_id=list_id, emoji=emoji, note=note,
         )
     except calendar_events.CalendarEventError as exc:
-        return RedirectResponse(
-            _with_flash(_safe_return(return_to, "/calendar"), str(exc)), status_code=303)
+        return _events_redirect(return_to, str(exc))
     finally:
         conn.close()
-    return RedirectResponse(_safe_return(return_to, "/calendar"), status_code=303)
+    return _events_redirect(return_to)
 
 
 @app.post("/calendar/events/{event_id}")
@@ -842,11 +846,10 @@ def post_event_update(
             start_date=start_date, end_date=end_date,
         )
     except calendar_events.CalendarEventError as exc:
-        return RedirectResponse(
-            _with_flash(_safe_return(return_to, "/calendar"), str(exc)), status_code=303)
+        return _events_redirect(return_to, str(exc))
     finally:
         conn.close()
-    return RedirectResponse(_safe_return(return_to, "/calendar"), status_code=303)
+    return _events_redirect(return_to)
 
 
 @app.post("/calendar/events/{event_id}/archive")
@@ -856,11 +859,10 @@ def post_event_archive(request: Request, event_id: int, return_to: str = Form("/
     try:
         calendar_events.archive_event(conn, event_id)  # soft: series stays in the ledger
     except calendar_events.CalendarEventError as exc:
-        return RedirectResponse(
-            _with_flash(_safe_return(return_to, "/calendar"), str(exc)), status_code=303)
+        return _events_redirect(return_to, str(exc))
     finally:
         conn.close()
-    return RedirectResponse(_safe_return(return_to, "/calendar"), status_code=303)
+    return _events_redirect(return_to)
 
 
 @app.post("/calendar/events/{event_id}/skip")
@@ -871,11 +873,10 @@ def post_event_skip(request: Request, event_id: int, date: str = Form(...),
     try:
         calendar_events.skip_occurrence(conn, event_id, date)
     except calendar_events.CalendarEventError as exc:
-        return RedirectResponse(
-            _with_flash(_safe_return(return_to, "/calendar"), str(exc)), status_code=303)
+        return _events_redirect(return_to, str(exc))
     finally:
         conn.close()
-    return RedirectResponse(_safe_return(return_to, "/calendar"), status_code=303)
+    return _events_redirect(return_to)
 
 
 @app.post("/calendar/events/{event_id}/unskip")
@@ -886,11 +887,10 @@ def post_event_unskip(request: Request, event_id: int, date: str = Form(...),
     try:
         calendar_events.unskip_occurrence(conn, event_id, date)
     except calendar_events.CalendarEventError as exc:
-        return RedirectResponse(
-            _with_flash(_safe_return(return_to, "/calendar"), str(exc)), status_code=303)
+        return _events_redirect(return_to, str(exc))
     finally:
         conn.close()
-    return RedirectResponse(_safe_return(return_to, "/calendar"), status_code=303)
+    return _events_redirect(return_to)
 
 
 # Eisenhower quadrants keyed by our priority field (high→urgent+important … none→neither)
