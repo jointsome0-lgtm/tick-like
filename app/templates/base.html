@@ -30,7 +30,7 @@
   </script>
   <script src="{{ static_url('app.js') }}" defer></script>
 </head>
-<body>
+<body data-rail="{{ rail | default('tasks') }}">
   {% import "_icons.html" as ic %}
   {% set R = rail | default('tasks') %}
   {%- macro theme_toggle(cls, with_label=false) -%}
@@ -46,6 +46,7 @@
       <a class="rail-ico {% if R == 'matrix' %}active{% endif %}" href="/matrix" title="Eisenhower Matrix">{{ ic.icon('matrix') }}</a>
       <a class="rail-ico {% if R == 'habit' %}active{% endif %}" href="/habits" title="Habit">{{ ic.icon('habit') }}</a>
       <a class="rail-ico {% if R == 'countdown' %}active{% endif %}" href="/countdown" title="Countdown">{{ ic.icon('countdown') }}</a>
+      <a class="rail-ico {% if R == 'learn' %}active{% endif %}" href="/learn" title="Learn">{{ ic.icon('learn') }}</a>
       <a class="rail-ico {% if R == 'search' %}active{% endif %}" href="/search" title="Search">{{ ic.icon('search') }}</a>
 
       <span class="rail-spacer"></span>
@@ -85,12 +86,13 @@
     <div class="term-resize" id="term-resize" title="Drag to resize"></div>
     <div class="term-head">
       <span class="term-dot" id="term-dot"></span>
-      <span class="term-title">Terminal</span>
+      <div class="term-tabs" id="term-tabs" role="tablist" aria-label="Terminal tabs"></div>
+      <button type="button" class="term-btn term-new" id="term-new" title="New terminal" aria-label="New terminal">{{ ic.icon('plus') }}</button>
       <span class="term-meta">localhost · {{ request.client.host }}</span>
       <button type="button" class="term-btn" id="term-min" title="Minimize" aria-label="Minimize terminal">–</button>
-      <button type="button" class="term-btn" id="term-close" title="Close (ends session)" aria-label="Close terminal">✕</button>
+      <button type="button" class="term-btn" id="term-close" title="Close active terminal" aria-label="Close active terminal">{{ ic.icon('close') }}</button>
     </div>
-    <div id="term" class="term-screen"></div>
+    <div id="term-screens" class="term-screens"></div>
     <div id="term-status" class="term-status" hidden></div>
   </div>
   <script src="{{ static_url('terminal.js') }}" defer></script>

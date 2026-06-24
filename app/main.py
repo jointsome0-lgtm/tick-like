@@ -933,6 +933,11 @@ def get_matrix(request: Request):
     )
 
 
+@app.get("/learn")
+def get_learn(request: Request):
+    return templates.TemplateResponse(request, "learn.html", {"request": request, "rail": "learn"})
+
+
 @app.get("/focus")
 def get_focus(request: Request):
     conn = get_conn()
