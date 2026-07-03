@@ -16,7 +16,19 @@
 </header>
 <div class="focus-layout">
   <div class="focus-main">
+    {% if lessons is defined %}
+    <label class="focus-task focus-lesson" for="focus-lesson">
+      <span class="fl-cap">Studying</span>
+      <select class="focus-lesson-select" id="focus-lesson">
+        <option value="">No lesson</option>
+        {% for l in lessons %}
+        <option value="{{ l.id }}">{{ l.title }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    {% else %}
     <a class="focus-task" href="#">Focus {{ ic.icon('chev-right') }}</a>
+    {% endif %}
     <div class="focus-ring">
       <span class="focus-time" id="focus-time">25:00</span>
     </div>
@@ -43,7 +55,7 @@
         <span class="fr-dot fr-{{ r.mode }}" aria-hidden="true"></span>
         <span class="fr-main">
           <span class="fr-dur">{{ r.duration_label }}</span>
-          <span class="fr-sub">{{ r.mode_label }}</span>
+          <span class="fr-sub">{{ r.mode_label }}{% if r.lesson_title %} · {{ r.lesson_title }}{% endif %}</span>
         </span>
         <span class="fr-time">{{ r.time_label }}</span>
       </li>

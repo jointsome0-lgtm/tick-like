@@ -26,7 +26,24 @@ class FocusError(ValueError):
 # --- write -----------------------------------------------------------------
 
 
-def record_session(conn: sqlite3.Connection, mode: str, seconds, note: str | None = None) -> int:
+def _coerce_lesson_id(conn: sqlite3.Connection, value) -> int | None:
+    """A focus session may name the lesson being studied. Accept only a positive id
+    that points at a real, non-archived lesson; anything else (blank, junk, deleted,
+    archived) stores as NULL so a bogus/stale value can't dangle."""
+    try:
+        lesson_id = int(value)
+    except (TypeError, ValueError):
+        return None
+    if lesson_id <= 0:
+        return None
+    row = conn.execute(
+        "SELECT 1 FROM lessons WHERE id = ? AND archived_at IS NULL", (lesson_id,)
+    ).fetchone()
+    return lesson_id if row else None
+
+
+def record_session(conn: sqlite3.Connection, mode: str, seconds, note: str | None = None,
+                   lesson_id=None) -> int:
     """Persist one finished focus session; returns its id. Row + event in one txn."""
     if mode not in MODES:
         raise FocusError("unknown focus mode")
@@ -38,17 +55,19 @@ def record_session(conn: sqlite3.Connection, mode: str, seconds, note: str | Non
         raise FocusError("duration must be positive")
     seconds = min(seconds, MAX_SECONDS)
     note = (note or "").strip() or None
+    lesson_id = _coerce_lesson_id(conn, lesson_id)
     ts = now_iso()
     day = today_str()
     with conn:
         cur = conn.execute(
-            "INSERT INTO focus_sessions (mode, seconds, note, date, ended_at, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (mode, seconds, note, day, ts, ts),
+            "INSERT INTO focus_sessions (mode, seconds, note, date, ended_at, created_at, lesson_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (mode, seconds, note, day, ts, ts, lesson_id),
         )
         session_id = cur.lastrowid
         append_event(conn, "focus_session_recorded",
-                     {"session_id": session_id, "mode": mode, "seconds": seconds})
+                     {"session_id": session_id, "mode": mode, "seconds": seconds,
+                      "lesson_id": lesson_id})
     return session_id
 
 
@@ -110,6 +129,14 @@ def overview(conn: sqlite3.Connection) -> dict:
     }
 
 
+# SELECT that carries the linked lesson's title alongside the session row, so a
+# record row can name what was studied. LEFT JOIN keeps unattached sessions.
+_RECORD_SELECT = (
+    "SELECT fs.*, l.title AS lesson_title "
+    "FROM focus_sessions fs LEFT JOIN lessons l ON l.id = fs.lesson_id "
+)
+
+
 def _record_view(r: sqlite3.Row) -> dict:
     return {
         "id": r["id"],
@@ -118,13 +145,15 @@ def _record_view(r: sqlite3.Row) -> dict:
         "duration_label": _dur_label(r["seconds"]),
         "time_label": _time_label(r["ended_at"]),
         "date": r["date"],
+        "lesson_id": r["lesson_id"],
+        "lesson_title": r["lesson_title"],
     }
 
 
 def recent_sessions(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
     """Most-recent finished sessions, newest first — the Focus Record list."""
     rows = conn.execute(
-        "SELECT * FROM focus_sessions ORDER BY ended_at DESC, id DESC LIMIT ?",
+        _RECORD_SELECT + "ORDER BY fs.ended_at DESC, fs.id DESC LIMIT ?",
         (limit,),
     ).fetchall()
     return [_record_view(r) for r in rows]
@@ -132,5 +161,5 @@ def recent_sessions(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
 
 def get_session_view(conn: sqlite3.Connection, session_id: int) -> dict | None:
     """One session as a record-row dict (for the Mode-B live prepend)."""
-    r = conn.execute("SELECT * FROM focus_sessions WHERE id = ?", (session_id,)).fetchone()
+    r = conn.execute(_RECORD_SELECT + "WHERE fs.id = ?", (session_id,)).fetchone()
     return _record_view(r) if r else None

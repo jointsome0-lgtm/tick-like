@@ -176,14 +176,18 @@
         '<span class="fr-main"><span class="fr-dur"></span><span class="fr-sub"></span></span>' +
         '<span class="fr-time"></span>';
       li.querySelector(".fr-dur").textContent = rec.duration_label;
-      li.querySelector(".fr-sub").textContent = rec.mode_label;
+      li.querySelector(".fr-sub").textContent =
+        rec.mode_label + (rec.lesson_title ? " · " + rec.lesson_title : "");
       li.querySelector(".fr-time").textContent = rec.time_label;
       list.insertBefore(li, list.firstChild);
     }
     async function recordSession(m, secs) {
       secs = Math.round(secs);
       if (!secs || secs < 1) return;
-      const res = await postPartial("/focus/session", { mode: m, seconds: secs });
+      const params = { mode: m, seconds: secs };
+      const sel = document.getElementById("focus-lesson");
+      if (sel && sel.value) params.lesson_id = sel.value;
+      const res = await postPartial("/focus/session", params);
       if (res && res.ok) { applyFocus(res.overview); prependRecord(res.record); }
     }
 

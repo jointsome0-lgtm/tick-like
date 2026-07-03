@@ -588,7 +588,7 @@ with TestClient(app) as c:
             except ce.CalendarEventError:
                 check(label, True)
 
-        check("schema migrated to v7", cconn.execute("PRAGMA user_version").fetchone()[0] == 7)
+        check("schema migrated to v8", cconn.execute("PRAGMA user_version").fetchone()[0] == 8)
         oid = ce.create_event(cconn, "Orbit Drill", start_date="2027-04-07", freq="weekly",
                               byweekday="1010100", start_time="09:10", end_time="09:55")
         sid = ce.create_event(cconn, "Signal Lab", start_date="2027-04-07", freq="weekly",
@@ -881,6 +881,46 @@ with TestClient(app) as c:
           {"lesson_created", "lesson_status_changed", "lesson_archived",
            "lesson_restored"} <= ltypes,
           str(sorted(t for t in ltypes if t.startswith("lesson"))))
+
+    # --- Focus ↔ Lesson link (schema v8): a session names the lesson studied
+    from app.services import focus as _focus
+
+    rF = c.post("/focus/session",
+                data={"mode": "pomo", "seconds": "1500", "lesson_id": str(lid)},
+                follow_redirects=False)
+    check("focus session with a lesson is accepted", rF.status_code == 303, str(rF.status_code))
+    fconn = get_conn()
+    try:
+        stored = fconn.execute(
+            "SELECT COUNT(*) AS n FROM focus_sessions WHERE lesson_id = ?", (lid,)).fetchone()["n"]
+        check("focus session stores the lesson_id", stored == 1)
+        recs = _focus.recent_sessions(fconn)
+        check("focus record surfaces the linked lesson title",
+              any(r["lesson_title"] == "Sparse Transformers Study" for r in recs))
+    finally:
+        fconn.close()
+
+    c.post("/focus/session", data={"mode": "pomo", "seconds": "60", "lesson_id": "999999"},
+           follow_redirects=False)
+    c.post("/focus/session", data={"mode": "pomo", "seconds": "60", "lesson_id": "junk"},
+           follow_redirects=False)
+    fconn = get_conn()
+    try:
+        bad = fconn.execute(
+            "SELECT COUNT(*) AS n FROM focus_sessions WHERE lesson_id = 999999").fetchone()["n"]
+        check("nonexistent lesson_id is nulled, not stored", bad == 0)
+        check("a plain focus session (no lesson) still records",
+              _focus.overview(fconn)["total_pomo"] >= 3)
+    finally:
+        fconn.close()
+
+    check("focus event payload carries lesson_id",
+          any(x["type"] == "focus_session_recorded" and x["payload"].get("lesson_id") == lid
+              for x in [_json.loads(y) for y in c.post("/export/jsonl").text.splitlines()]))
+
+    rfocus = c.get("/focus")
+    check("focus page renders the lesson picker",
+          'id="focus-lesson"' in rfocus.text and "Sparse Transformers Study" in rfocus.text)
 
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

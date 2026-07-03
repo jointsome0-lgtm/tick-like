@@ -1223,11 +1223,13 @@ def get_focus(request: Request):
     try:
         ov = focus.overview(conn)
         records = focus.recent_sessions(conn)
+        lesson_opts = lessons.list_lessons(conn)
     finally:
         conn.close()
     return templates.TemplateResponse(request,
         "focus.html",
-        {"request": request, "rail": "focus", "ov": ov, "records": records},
+        {"request": request, "rail": "focus", "ov": ov, "records": records,
+         "lessons": lesson_opts},
     )
 
 
@@ -1237,6 +1239,7 @@ def post_focus_session(
     mode: str = Form("pomo"),
     seconds: int = Form(...),
     note: str = Form(""),
+    lesson_id: str = Form(""),
     return_to: str = Form("/focus"),
 ):
     """Record a finished Pomodoro / stopwatch span. Mode B returns refreshed stats."""
@@ -1244,7 +1247,7 @@ def post_focus_session(
     json_mode = _wants_json(request)
     conn = get_conn()
     try:
-        sid = focus.record_session(conn, mode, seconds, note=note)
+        sid = focus.record_session(conn, mode, seconds, note=note, lesson_id=lesson_id)
         if json_mode:
             return JSONResponse({
                 "ok": True,

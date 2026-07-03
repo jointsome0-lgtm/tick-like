@@ -108,7 +108,7 @@ def get_conn() -> sqlite3.Connection:
 
 # --- schema + migrations (sec13.1 / sec13.3) -------------------------------
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 _INITIAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS routine_items (
@@ -350,6 +350,25 @@ def _migrate_to_7(conn: sqlite3.Connection) -> None:
             conn.execute(stmt)
 
 
+# v8 — Focus ↔ Lesson link: a focus session may name the lesson being studied, so
+# study time stops being a silo (surfaces on the Focus record + in the ledger). The
+# column is nullable — an unattached Pomodoro/stopwatch span is still the norm.
+_SCHEMA_V8 = """
+ALTER TABLE focus_sessions ADD COLUMN lesson_id INTEGER REFERENCES lessons(id);
+"""
+
+
+def _migrate_to_8(conn: sqlite3.Connection) -> None:
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(focus_sessions)")}
+    for stmt in _SCHEMA_V8.strip().split(";"):
+        stmt = stmt.strip()
+        if not stmt:
+            continue
+        col = stmt.split("ADD COLUMN", 1)[1].split()[0]
+        if col not in have:
+            conn.execute(stmt)
+
+
 # Ordered, idempotent steps. A schema change must NEVER require deleting the
 # ledger to upgrade (sec13.3): add a (version, fn) row, never rewrite history.
 _MIGRATIONS = [
@@ -360,6 +379,7 @@ _MIGRATIONS = [
     (5, _migrate_to_5),
     (6, _migrate_to_6),
     (7, _migrate_to_7),
+    (8, _migrate_to_8),
 ]
 
 
