@@ -356,6 +356,7 @@ def _habit_detail_ctx(conn, item_id: int, month: str | None, base: str) -> dict 
         "total": stats.total_checkins(conn, item_id),
         "month_stats": stats.month_stats(conn, item_id, year, mon),
         "weeks": stats.month_calendar(conn, item_id, year, mon),
+        "year_map": stats.year_map(conn, item_id),
         "log": stats.recent_log(conn, item_id),
         "month_label": first.strftime("%B %Y"),
         "month_prev_url": f"{base}{sep}month={prev_first.strftime('%Y-%m')}",
@@ -397,13 +398,14 @@ def _render_tasks(request: Request, conn, *, page_title: str, active: str, secti
                   show_add: bool, add_list_id=None, add_list_name: str = "",
                   add_due: str | None = None, add_kind: str = "task",
                   sel: str | None = None, month: str | None = None,
-                  flash: str | None = None, rail: str = "tasks"):
+                  flash: str | None = None, rail: str = "tasks", pulse=None):
     """Render tasks.html: list-sidebar + sections + (optional) detail pane."""
     ctx = {
         "request": request,
         "rail": rail,
         "active": active,
         "page_title": page_title,
+        "pulse": pulse,
         "sections": sections,
         "show_add": show_add,
         "add_list_id": add_list_id,
@@ -466,6 +468,7 @@ def get_today(request: Request, sel: str | None = None, month: str | None = None
             request, conn, page_title="Today", active="today", sections=sections,
             show_add=True, add_list_id=lists.inbox_id(conn), add_list_name="Inbox",
             add_due=today, sel=sel, month=month, flash=flash,
+            pulse=stats.week_pulse(conn, today),
         )
     finally:
         conn.close()
@@ -1224,12 +1227,15 @@ def get_focus(request: Request):
         ov = focus.overview(conn)
         records = focus.recent_sessions(conn)
         lesson_opts = lessons.list_lessons(conn)
+        daily = focus.daily_totals(conn)
+        lesson_focus = focus.lesson_totals(conn)
     finally:
         conn.close()
     return templates.TemplateResponse(request,
         "focus.html",
         {"request": request, "rail": "focus", "ov": ov, "records": records,
-         "lessons": lesson_opts},
+         "lessons": lesson_opts, "daily": daily, "lesson_focus": lesson_focus,
+         "focus_streak": focus.focus_day_streak(daily)},
     )
 
 

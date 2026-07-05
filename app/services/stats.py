@@ -192,3 +192,78 @@ def recent_log(conn: sqlite3.Connection, item_id: int, limit: int = 20) -> list[
         "ORDER BY date DESC LIMIT ?",
         (item_id, limit),
     ).fetchall()
+
+
+# --- year heatmap ("star map of the sky", habit detail) --------------------
+
+_LEVEL = {"full_done": 3, "light_done": 2, "skipped": 1}
+
+
+def year_map(
+    conn: sqlite3.Connection, item_id: int, end: str | None = None, weeks: int = 52
+) -> list[list[dict]]:
+    """`weeks` Sunday-start week columns x 7 weekday rows, ending the week that
+    contains `end` (default today) — the habit's year-long check-in sky. Each
+    cell: {date, in_range, status, level, is_today}. level 0..3 dims the star:
+    0 empty, 1 skipped, 2 light_done, 3 full_done (kept)."""
+    end_d = _date.fromisoformat(end or today_str())
+    sun = end_d - timedelta(days=(end_d.weekday() + 1) % 7)  # Sunday of end's week
+    start_sun = sun - timedelta(weeks=weeks - 1)
+    smap = history(conn, item_id)
+    cols: list[list[dict]] = []
+    for w in range(weeks):
+        col_sun = start_sun + timedelta(weeks=w)
+        col = []
+        for dow in range(7):
+            d = col_sun + timedelta(days=dow)
+            in_range = d <= end_d
+            status = smap.get(d.isoformat()) if in_range else None
+            col.append({
+                "date": d.isoformat(), "in_range": in_range,
+                "status": status, "level": _LEVEL.get(status, 0),
+                "is_today": d == end_d,
+            })
+        cols.append(col)
+    return cols
+
+
+# --- week pulse (Today sky-strip) ------------------------------------------
+
+
+def week_pulse(
+    conn: sqlite3.Connection, end: str | None = None, days: int = 7
+) -> list[dict]:
+    """Per-day activity for the last `days` days ending `end` (default today),
+    oldest->newest — the Today 'sky strip'. Each day pools three ledgers: kept
+    check-ins, focus minutes, and closed tasks; `total` is the star's brightness."""
+    end_d = _date.fromisoformat(end or today_str())
+    start = end_d - timedelta(days=days - 1)
+    s_iso = start.isoformat()
+    checks = dict(conn.execute(
+        "SELECT date, COUNT(*) FROM checkins WHERE date >= ? AND status IN (?, ?) GROUP BY date",
+        (s_iso, *KEPT),
+    ).fetchall())
+    focus_secs = dict(conn.execute(
+        "SELECT date, COALESCE(SUM(seconds),0) FROM focus_sessions WHERE date >= ? GROUP BY date",
+        (s_iso,),
+    ).fetchall())
+    done = dict(conn.execute(
+        "SELECT substr(completed_at,1,10) AS d, COUNT(*) FROM tasks "
+        "WHERE completed_at IS NOT NULL AND substr(completed_at,1,10) >= ? GROUP BY d",
+        (s_iso,),
+    ).fetchall())
+    out = []
+    for i in range(days):
+        d = start + timedelta(days=i)
+        iso = d.isoformat()
+        ci = checks.get(iso, 0)
+        fmin = focus_secs.get(iso, 0) // 60
+        tk = done.get(iso, 0)
+        out.append({
+            "iso": iso, "dow": d.strftime("%a")[:1], "day": d.day,
+            "checkins": ci, "focus_min": fmin, "tasks": tk,
+            "total": ci + tk + (1 if fmin else 0),
+            "is_today": d == end_d,
+            "title": f"{d.strftime('%a %b %-d')} · {ci} kept · {fmin}m focus · {tk} done",
+        })
+    return out

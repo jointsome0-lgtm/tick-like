@@ -4,6 +4,7 @@
    item, total, current_streak, month_stats, month_label, weeks, can_next,
    month_prev_url, month_next_url, log, today, today_status, pane, edit, sections. #}
 {% import "_icons.html" as ic %}
+{% import "_charts.html" as ch %}
 {% set a = avatar(item.title) %}
 <div class="hd">
   <header class="hd-head">
@@ -79,6 +80,13 @@
       {% endfor %}{% endfor %}
     </div>
   </section>
+
+  {% if year_map is defined %}
+  <section class="year-sky">
+    <h3 class="log-head">A year of check-ins</h3>
+    {{ ch.star_year(year_map) }}
+  </section>
+  {% endif %}
 
   <h3 class="log-head">Habit Log on {{ month_label.split(" ")[0] }}</h3>
   {% if log %}

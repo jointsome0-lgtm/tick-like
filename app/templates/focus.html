@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "_icons.html" as ic %}
+{% import "_charts.html" as ch %}
 {% block title %}Focus · Ephemeris{% endblock %}
 {% block content_class %}wide{% endblock %}
 {% block content %}
@@ -52,6 +53,18 @@
       <div class="stat-card"><span class="stat-top">Total Pomo</span><span class="stat-val" id="st-total-pomo">{{ ov.total_pomo }}</span></div>
       <div class="stat-card"><span class="stat-top">Total Focus Duration</span><span class="stat-val" id="st-total-focus">{{ ov.total_focus.value }}<small>{{ ov.total_focus.unit }}</small></span></div>
     </div>
+    {% if daily is defined %}
+    <section class="focus-14">
+      {{ ch.bar_chart(daily, label='Last 14 days') }}
+      {% if focus_streak %}<p class="focus-streak">{{ focus_streak }}-day focus streak</p>{% endif %}
+    </section>
+    {% if lesson_focus %}
+    <section class="focus-by-lesson">
+      <h2>By lesson</h2>
+      {{ ch.rank_bars(lesson_focus) }}
+    </section>
+    {% endif %}
+    {% endif %}
     <div class="focus-rec-head">
       <h2>Focus Record</h2>
       <button class="head-btn" title="Add record">{{ ic.icon('plus') }}</button>

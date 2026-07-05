@@ -509,6 +509,31 @@ with TestClient(app) as c:
     check("focus page shows a record row", 'class="focus-rec-row"' in r.text and "25m" in r.text)
     check("focus page total pomo = 2", 'id="st-total-pomo">2<' in r.text)
 
+    # --- statistics & charts (M2): the recorded sessions feed the charts ------
+    from app.services import focus as _focus, stats as _stats  # noqa: E402
+    check("/focus renders the 14-day bar chart", 'class="ec-bars"' in r.text and "Last 14 days" in r.text)
+    cx = get_conn()
+    try:
+        daily = _focus.daily_totals(cx)
+        ym = _stats.year_map(cx, 1)
+        pulse = _stats.week_pulse(cx)
+    finally:
+        cx.close()
+    check("daily_totals spans 14 days", len(daily) == 14, str(len(daily)))
+    check("daily_totals reflects today's sessions (60m / 2 pomo)",
+          daily[-1]["minutes"] == 60 and daily[-1]["pomos"] == 2,
+          f'{daily[-1]["minutes"]}m/{daily[-1]["pomos"]}p')
+    check("focus_day_streak counts today", _focus.focus_day_streak(daily) >= 1)
+    check("year_map is 52 Sunday-start columns of 7",
+          len(ym) == 52 and all(len(col) == 7 for col in ym))
+    check("year_map marks exactly one 'today'",
+          sum(1 for col in ym for cell in col if cell["is_today"]) == 1)
+    check("week_pulse spans 7 days; today reflects 60m focus",
+          len(pulse) == 7 and pulse[-1]["focus_min"] == 60)
+    check("/today carries the sky-strip constellation", 'class="sky-strip"' in c.get("/today").text)
+    hd = c.get("/habits?sel=habit-1").text
+    check("habit detail shows the year sky", 'class="sy-grid"' in hd and "A year of check-ins" in hd)
+
     # cross-origin focus POST rejected
     r = c.post("/focus/session", data={"mode": "pomo", "seconds": 60},
                headers={"Origin": "http://evil.example", "Host": "testserver"}, follow_redirects=False)

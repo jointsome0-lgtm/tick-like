@@ -10,6 +10,7 @@ never recompute them elsewhere. Each write appends its event (sec14.1) in one tx
 from __future__ import annotations
 
 import sqlite3
+from datetime import date as _date, timedelta
 
 from ..db import append_event, now_iso, today_str
 
@@ -163,3 +164,80 @@ def get_session_view(conn: sqlite3.Connection, session_id: int) -> dict | None:
     """One session as a record-row dict (for the Mode-B live prepend)."""
     r = conn.execute(_RECORD_SELECT + "WHERE fs.id = ?", (session_id,)).fetchone()
     return _record_view(r) if r else None
+
+
+# --- daily aggregates (Focus charts) ---------------------------------------
+
+
+def _daily_title(d: _date, minutes: int, pomos: int) -> str:
+    md = d.strftime("%a %b %-d")
+    if not minutes and not pomos:
+        return f"{md} · no focus"
+    bits = [f"{minutes}m"]
+    if pomos:
+        bits.append(f"{pomos} pomo" + ("s" if pomos != 1 else ""))
+    return md + " · " + " · ".join(bits)
+
+
+def daily_totals(conn: sqlite3.Connection, days: int = 14) -> list[dict]:
+    """Per-day focus totals for the last `days` days, oldest->newest, missing
+    days zero-filled. Powers the 'Last N days' bar chart. `value` is the chart
+    magnitude (minutes); `title` is the per-bar tooltip."""
+    today = _date.fromisoformat(today_str())
+    start = today - timedelta(days=days - 1)
+    rows = conn.execute(
+        "SELECT date, COALESCE(SUM(seconds),0) AS sec, "
+        "COALESCE(SUM(CASE WHEN mode='pomo' THEN 1 ELSE 0 END),0) AS pomos "
+        "FROM focus_sessions WHERE date >= ? GROUP BY date",
+        (start.isoformat(),),
+    ).fetchall()
+    by_date = {r["date"]: (r["sec"], r["pomos"]) for r in rows}
+    out = []
+    for i in range(days):
+        d = start + timedelta(days=i)
+        sec, pomos = by_date.get(d.isoformat(), (0, 0))
+        minutes = sec // 60
+        out.append({
+            "iso": d.isoformat(), "dow": d.strftime("%a"), "day": d.day,
+            "seconds": sec, "minutes": minutes, "pomos": pomos,
+            "is_today": d == today, "value": minutes,
+            "title": _daily_title(d, minutes, pomos),
+        })
+    return out
+
+
+def lesson_totals(conn: sqlite3.Connection, days: int | None = None,
+                  limit: int = 6) -> list[dict]:
+    """Top lessons by focused time (all-time, or the last `days` days). Only
+    sessions that named a lesson count — the per-lesson Focus breakdown."""
+    params: list = []
+    where = "WHERE fs.lesson_id IS NOT NULL "
+    if days:
+        start = (_date.fromisoformat(today_str()) - timedelta(days=days - 1)).isoformat()
+        where += "AND fs.date >= ? "
+        params.append(start)
+    rows = conn.execute(
+        "SELECT l.id AS lesson_id, l.title AS title, "
+        "COALESCE(SUM(fs.seconds),0) AS sec, "
+        "COALESCE(SUM(CASE WHEN fs.mode='pomo' THEN 1 ELSE 0 END),0) AS pomos "
+        "FROM focus_sessions fs JOIN lessons l ON l.id = fs.lesson_id "
+        + where + "GROUP BY l.id ORDER BY sec DESC, l.id LIMIT ?",
+        (*params, limit),
+    ).fetchall()
+    return [{
+        "lesson_id": r["lesson_id"], "title": r["title"],
+        "seconds": r["sec"], "minutes": r["sec"] // 60, "pomos": r["pomos"],
+        "label": _dur_label(r["sec"]),
+    } for r in rows]
+
+
+def focus_day_streak(daily: list[dict]) -> int:
+    """Consecutive days with any focus, counting back from the last entry
+    (today). Pure — operates on a daily_totals() list."""
+    streak = 0
+    for d in reversed(daily):
+        if d["seconds"] > 0:
+            streak += 1
+        else:
+            break
+    return streak
