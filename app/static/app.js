@@ -135,6 +135,69 @@
     document.addEventListener("visibilitychange", tick);
   })();
 
+  // --- Learn workspace: draggable list/preview split + collapsible list -------
+  // The list width is the --lesson-w grid track on .learn-workspace; both the
+  // width (al-learn-w) and the collapsed state (al-learn-min) persist. Desktop
+  // only — below 860px the workspace stacks and the gutter is display:none.
+  (() => {
+    const ws = document.querySelector(".learn-workspace");
+    const split = document.getElementById("learn-split");
+    const btn = document.getElementById("learn-split-btn");
+    if (!ws || !split || !btn) return;
+    const panel = ws.querySelector(".lesson-panel");
+    const W_KEY = "al-learn-w", MIN_KEY = "al-learn-min";
+    const MIN_LIST = 250, MIN_PREVIEW = 320;
+
+    function applyWidth(w) {
+      const max = Math.max(ws.clientWidth - MIN_PREVIEW - split.offsetWidth - 4, MIN_LIST);
+      ws.style.setProperty("--lesson-w", Math.round(Math.min(Math.max(w, MIN_LIST), max)) + "px");
+    }
+    function applyCollapsed(min) {
+      ws.classList.toggle("panel-collapsed", min);
+      const label = min ? "Expand lesson list" : "Collapse lesson list";
+      btn.title = label;
+      btn.setAttribute("aria-label", label);
+      btn.setAttribute("aria-expanded", String(!min));
+    }
+    const currentWidth = () => parseInt(ws.style.getPropertyValue("--lesson-w"), 10);
+
+    const savedW = parseInt(localStorage.getItem(W_KEY), 10);
+    if (savedW > 0) applyWidth(savedW);
+    applyCollapsed(localStorage.getItem(MIN_KEY) === "1");
+
+    btn.addEventListener("click", () => {
+      const min = !ws.classList.contains("panel-collapsed");
+      applyCollapsed(min);
+      try { localStorage.setItem(MIN_KEY, min ? "1" : "0"); } catch (_) {}
+    });
+
+    split.addEventListener("mousedown", (e) => {
+      if (btn.contains(e.target) || ws.classList.contains("panel-collapsed") || !panel) return;
+      e.preventDefault();
+      const startX = e.clientX;
+      const startW = panel.getBoundingClientRect().width;
+      ws.classList.add("splitting");
+      document.body.style.userSelect = "none";
+      const onMove = (ev) => applyWidth(startW + ev.clientX - startX);
+      const end = () => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", end);
+        ws.classList.remove("splitting");
+        document.body.style.userSelect = "";
+        const w = currentWidth();
+        if (w) { try { localStorage.setItem(W_KEY, String(w)); } catch (_) {} }
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", end);
+    });
+
+    // keep a saved width inside bounds when the window shrinks
+    window.addEventListener("resize", () => {
+      const w = currentWidth();
+      if (w) applyWidth(w);
+    });
+  })();
+
   // --- theme: tri-state (system | light | dark); default follows the OS --------
   // The storage key, resolve rule and system media query live in ONE place:
   // window.alTheme, defined by base.html's pre-paint head script (which always

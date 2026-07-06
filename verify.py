@@ -204,6 +204,24 @@ with TestClient(app) as c:
           and 'id="term-find-prev"' in base_html
           and 'id="term-find-next"' in base_html
           and 'id="term-find-close"' in base_html)
+
+    # --- Learn split: resizable / collapsible lesson list -----------------
+    r = c.get("/learn")
+    check("GET /learn 200", r.status_code == 200, str(r.status_code))
+    check("learn workspace has the split gutter + collapse button",
+          'class="learn-workspace"' in r.text
+          and 'id="learn-split"' in r.text
+          and 'id="learn-split-btn"' in r.text)
+    check("style.css drives the lesson list width via --lesson-w (+ collapsed state)",
+          "var(--lesson-w" in css.text
+          and ".learn-workspace.panel-collapsed" in css.text
+          and ".learn-workspace.splitting .lesson-frame { pointer-events: none; }" in css.text
+          and ".learn-workspace.panel-collapsed .lesson-panel { display: flex; }" in css.text)
+    app_js = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    check("app.js persists the learn split (al-learn-w / al-learn-min)",
+          'W_KEY = "al-learn-w"' in app_js
+          and 'MIN_KEY = "al-learn-min"' in app_js
+          and '"--lesson-w"' in app_js)
     # --- Learn lesson terminal: lesson-scoped cwd + generated AGENTS.md ---
     from app.services import lessons as lessons_svc  # local: only these checks use it
     _lt_conn = get_conn()

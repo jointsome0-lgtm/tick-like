@@ -13,7 +13,7 @@
   {% if flash %}<p class="flash" role="status">{{ flash }}</p>{% endif %}
 
   <div class="learn-workspace">
-    <aside class="lesson-panel" aria-label="Lessons">
+    <aside class="lesson-panel" id="lesson-panel" aria-label="Lessons">
       <form method="post" action="/learn/lessons" class="learn-add" autocomplete="off">
         <span class="qa-plus" aria-hidden="true">+</span>
         <input type="text" name="title" class="qa-input" placeholder="Lesson title" required>
@@ -89,6 +89,13 @@
       </div>
       {% endif %}
     </aside>
+
+    <div class="learn-split" id="learn-split" role="separator" aria-orientation="vertical"
+         title="Drag to resize">
+      <button type="button" class="learn-split-btn" id="learn-split-btn"
+              title="Collapse lesson list" aria-label="Collapse lesson list"
+              aria-controls="lesson-panel" aria-expanded="true">{{ ic.icon('chev-left') }}</button>
+    </div>
 
     <section class="lesson-preview" aria-label="Lesson preview">
       {% if selected %}
