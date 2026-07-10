@@ -244,6 +244,13 @@ with TestClient(app) as c:
     check("lesson AGENTS.md teaches stage=page + the manifest contract",
           "related/" in agents_text and "updated_by_agent_at" in agents_text
           and "reading order" in agents_text)
+    claude_text = ""
+    if ws_info:
+        _claude_path = Path(ws_info["dir"]) / "CLAUDE.md"
+        if _claude_path.is_file():
+            claude_text = _claude_path.read_text(encoding="utf-8")
+    check("lesson CLAUDE.md shim @-includes AGENTS.md for Claude Code",
+          claude_text.startswith("@AGENTS.md") and "overwritten" in claude_text)
     check("prepare_terminal_workspace rejects junk/unknown slugs",
           lessons_svc.prepare_terminal_workspace("../evil") is None
           and lessons_svc.prepare_terminal_workspace("no-such-lesson-slug") is None
@@ -262,7 +269,8 @@ with TestClient(app) as c:
           'id="lesson-term-btn"' in learn_tpl and "client_is_local(request)" in learn_tpl)
 
     # symlink hardening (Codex review, low): a pre-planted symlink at the lesson
-    # dir or at AGENTS.md must not redirect the write / cwd outside the bundle.
+    # dir or at AGENTS.md/CLAUDE.md must not redirect the write / cwd outside
+    # the bundle.
     import os as _os
     import shutil as _shutil
     _ln_conn = get_conn()
@@ -289,6 +297,12 @@ with TestClient(app) as c:
     _sym_file_res = lessons_svc.prepare_terminal_workspace(_ln["slug"])
     check("prepare_terminal_workspace refuses a symlinked AGENTS.md (no truncation)",
           _sym_file_res is None and _decoy_file.read_text(encoding="utf-8") == "original")
+    # real dir + real AGENTS.md, but CLAUDE.md is a pre-planted symlink — same refusal
+    _os.unlink(_ln_dir / "AGENTS.md")
+    _os.symlink(_decoy_file, _ln_dir / "CLAUDE.md")
+    _sym_claude_res = lessons_svc.prepare_terminal_workspace(_ln["slug"])
+    check("prepare_terminal_workspace refuses a symlinked CLAUDE.md (no truncation)",
+          _sym_claude_res is None and _decoy_file.read_text(encoding="utf-8") == "original")
 
     tday = c.get("/today").text
     check("Today title carries the Ephemeris identity", "· Ephemeris" in tday)
