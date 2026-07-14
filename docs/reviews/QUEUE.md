@@ -19,7 +19,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-(none)
+- [ ] 2026-07-14 — d56b617 — `app/terminal.py`, `verify.py`, `verify_restore.py` —
+  project rename: env switches `TICKLIKE_DISABLE_TERMINAL` / `TICKLIKE_TERM_PROXY`
+  renamed to `EPHEMERIS_*` (mechanical, no logic change); verify 340/340
 
 ## Done
 
