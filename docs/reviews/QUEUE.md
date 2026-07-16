@@ -19,7 +19,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-16 — 5ae5017, eeb71f1 — `app/services/lessons.py`, `verify.py` —
+## Done
+
+- [x] 2026-07-16 — 5ae5017, eeb71f1 — `app/services/lessons.py`, `verify.py` —
   issue #35 stage 1: the generated lesson `AGENTS.md` brief (constant
   `_AGENTS_TEMPLATE`, regenerated on every lesson-terminal open) rewritten
   from bundle-layout mechanics into a teaching contract: tutor mission,
@@ -31,10 +33,8 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `schema_version`/`lesson_uid`); `_write_brief` and the `CLAUDE.md` shim
   unchanged; verify 379 (+3); drained on 5ae5017 →
   `2026-07-16-lesson-brief-teaching-contract-review.md` (one Medium, one
-  Low — both fixed in eeb71f1, verify 380; addendum on the fix commit
-  pending)
-
-## Done
+  Low — both fixed in eeb71f1, verify 380; addendum on the fix
+  commit: L1/L2 resolved, no new findings)
 
 - [x] 2026-07-16 — 61b6d65, 5d7c226, ad11d31 — `app/terminal.py`,
   `app/services/lessons.py`, `app/main.py`, `app/templates/learn.html`,

@@ -171,3 +171,66 @@ a Medium instruction/data-boundary regression and omits a Low frozen
 filesystem rule. Fix both in a dedicated change, add negative regression
 coverage, and re-review before clearing the queue entry. Wider network exposure
 remains unsupported regardless of these fixes.
+
+## Addendum — re-review of fix commit `eeb71f1`
+
+**Scope and method:** re-applied the standing brief to the exact fix diff
+`eeb71f1^..eeb71f1`. The complete `app/services/lessons.py` and `verify.py` at
+the fix commit were re-read, together with the generated-brief publication and
+lesson-terminal call chain, the frozen whole-bundle symlink and attempt-data
+contract, and the earlier reports for this surface. The fix changes only the
+constant lesson brief and its string-presence regression checks; it does not
+change a listener, route, PTY/WS lifecycle, filesystem writer, or preview path.
+
+### Finding status
+
+- **L1 — Resolved.** The brief now labels everything the learner wrote as data,
+  never instructions (`app/services/lessons.py:364-368`), and extends the same
+  boundary to fetched or handed-in source material, lesson pages, assets,
+  `attempts.jsonl`, and files under `attempts/`. Embedded instructions,
+  commands, links, and tool requests are explicitly material to analyze rather
+  than directives, with the generated brief retaining precedence
+  (`app/services/lessons.py:399-409`). This closes the missing instruction/data
+  separation identified by L1. The verifier now pins both the attempt-specific
+  wording and the general untrusted-data/precedence wording
+  (`verify.py:310-323`). These checks validate publication of the static
+  contract; they cannot prove that a model will obey it, so the original
+  defense-in-depth limitation remains and is not a basis for widening terminal
+  or future attempt exposure.
+- **L2 — Resolved.** The generated contract now says never to follow symlinks
+  anywhere in the bundle and to skip a file if any component of its path passes
+  through a symbolic link (`app/services/lessons.py:410-412`). That is the
+  explicit study-agent rule required by the frozen whole-bundle policy and by
+  L2's fix direction. The verifier pins the no-symlink instruction
+  (`verify.py:319-323`). Application readers still need the C3 per-segment
+  enforcement already required by `docs/learn-bundle-spec.md`; that pre-existing
+  implementation gap is outside this agent-brief fix and does not leave L2 open.
+
+### New findings introduced by the fix
+
+No new Critical, High, Medium, Low, or Info findings. The added wording does not
+promote lesson content into trusted instructions, does not interpolate lesson
+data into either generated entry-point file, and does not relax the existing
+brief writer, workspace refusal, terminal opt-in, loopback peer, or exact
+Host/Origin protections. The added verifier checks only inspect the generated
+constant and introduce no attacker-controlled file access.
+
+### Addendum verification
+
+- `git diff --check eeb71f1^ eeb71f1` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m py_compile
+  app/services/lessons.py verify.py` — passed.
+- Focused generated-contract probe — passed after whitespace normalization: all
+  source/attempt untrusted-data, brief-precedence, and per-component no-symlink
+  clauses are present in the emitted template.
+- `env -u ACTIVITY_DATA_DIR PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 timeout 55s
+  .venv/bin/python -u verify.py` — inconclusive in this environment: the two
+  terminal-wiring checks passed, then the run stalled and exited `124` at the
+  bound with no failing assertion observed.
+
+### Revised deploy verdict
+
+**SAFE TO MAKE LIVE: YES for the lesson-agent teaching workflow under the
+documented opt-in, loopback-only posture.** L1 and L2 are resolved in
+`eeb71f1`, and the fix introduces no new findings. Wider network exposure
+remains unsupported and was not made safe by prompt wording.
