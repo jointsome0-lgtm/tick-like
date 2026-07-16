@@ -168,14 +168,14 @@ defined per finding in §9.2 (e.g. a bad `entry` degrades with a fallback
 rather than rejecting).
 
 Type mismatches: a field whose JSON type contradicts this section is
-treated as ABSENT (then the field's absent-rule applies) with an
-`invalid-value` finding — e.g. a non-list `pages` is absent pages
-(`no-pages`, rejected), a non-object `runtime` falls to `legacy-display`, a
-non-string `entry` falls back (`invalid-entry`). A non-object item inside
-`pages[]`/`questions[]`/`blocks[]` is dropped (`invalid-value`, degraded);
-`runtime.profile` missing or non-string is handled as `unknown-profile`. A
-malformed `updated_by_agent_at` is treated as absent (`invalid-value`,
-info).
+treated as ABSENT (then the field's absent-rule applies) with a
+`type-mismatch` finding (degraded) — e.g. a non-list `pages` is absent
+pages (also `no-pages`, rejected), a non-object `runtime` falls to
+`legacy-display`, a non-string `entry` falls back (also `invalid-entry`). A
+non-object item inside `pages[]`/`questions[]`/`blocks[]` is dropped
+(`type-mismatch`); `runtime.profile` missing or non-string is handled as
+`unknown-profile`. A malformed `updated_by_agent_at` string is treated as
+absent (`invalid-value`, info).
 
 ### 4.1 Path grammar
 
@@ -468,7 +468,8 @@ outcome). This is why one fixture can require several codes at once.
 | `identity-mismatch`  | degraded  | manifest `lesson_uid` ≠ DB `uid`; render as `legacy-display`, refuse attempt writes |
 | `symlinked-bundle`   | rejected  | §2; the bundle directory itself, or `lesson.json` itself, is a symlink |
 | `symlinked-path`     | degraded  | §2; a referenced path resolves through a symlink — treated as a missing file |
-| `invalid-value`      | info*     | an optional display/value field (`pages[].title`, `label`, `kind`, `language`, `updated_by_agent_at`) violates its grammar or limit — the field is dropped, the item stays; *a §4 type mismatch on a field or list item degrades instead (the field is treated as absent / the item dropped) |
+| `type-mismatch`      | degraded  | §4; a field's JSON type contradicts the schema (field treated as absent) or a list item is not an object (item dropped) |
+| `invalid-value`      | info      | an optional display/value field (`pages[].title`, `label`, `kind`, `language`, `updated_by_agent_at`) violates its grammar or limit; the field is dropped, the item stays |
 | `missing-attempts-root` | info   | §7; `attempts` injected into the read model |
 | `stale-metadata`     | info      | `slug`/`title`/`source_url` copy differs from DB or violates its own grammar/limit; DB wins |
 | `duplicate-concept`  | info      | §4.5; deduped |
@@ -545,7 +546,7 @@ keys from the read model, so the tool must read both.
 | `lesson_uid` | SQLite `lessons.uid` (minted/backfilled in C3; the tool never mints) |
 | `slug`, `title`, `source_url` | copied from v1 (they already mirror the DB); a `null` `source_url` is omitted |
 | `entry` | the normalized v1 `entry` |
-| `pages` | `[entry, *related]` from the normalized read model, order preserved; additionally, a valid DB `current_entry` absent from that list is inserted at the head (today's display-injection position), `entry` unchanged; ids minted deterministically: `"pg_" + sha256(lesson_uid + "\n" + path)` first 16 hex — reproducible across dry-run/run/re-verification; NOT re-derived on later renames (§3.1) |
+| `pages` | `[entry, *related]` from the normalized read model, order preserved; additionally, a valid DB `current_entry` absent from that list is inserted at the head (today's display-injection position), `entry` unchanged; ids minted deterministically: `"pg_" + sha256(lesson_uid + "\n" + path)` first 16 hex — reproducible across dry-run/run/re-verification; NOT re-derived on later renames (§3.1); unknown members of a v1 **object-form** `entry`/`related[]` item are copied verbatim onto the page object generated for that path, after `id`/`path` (§9.3 order) |
 | `questions`, `blocks`, `path`, `step`, `concepts` | absent (the agent adds them later per #35) |
 | `runtime` | `{"profile": "legacy-display"}` |
 | `artifact_roots` | `["attempts"]` |
@@ -559,7 +560,10 @@ manifest untouched (consistent with C4's stop-on-unsafe posture):
   (e.g. over-long path, too many pages);
 - an unknown v1 key collides with a v2-owned key (`lesson_uid`, `pages`,
   `questions`, `blocks`, `path`, `step`, `concepts`, `runtime`,
-  `artifact_roots`) — there is no lossless place for both.
+  `artifact_roots`) — there is no lossless place for both;
+- an object-form `entry`/`related[]` item carries a member named `id`,
+  `path`, or `title` beyond the consumed path — it would collide with the
+  v2-owned page-object keys.
 
 Invariants: HTML page bytes untouched; the DB `current_entry` selection
 untouched; idempotent (a v2 input is a no-op); dry-run, atomic replacement,
