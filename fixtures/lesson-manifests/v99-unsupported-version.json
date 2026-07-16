@@ -1,0 +1,13 @@
+{
+  "schema_version": 99,
+  "lesson_uid": "2f6c8a1e-3b7d-4e5f-9c2a-8d4b6f1e0c73",
+  "slug": "vera-example-from-the-future",
+  "title": "Vera Example: Unsupported Version Fixture",
+  "entry": "index.html",
+  "pages": [
+    {
+      "id": "pg_future001",
+      "path": "index.html"
+    }
+  ]
+}

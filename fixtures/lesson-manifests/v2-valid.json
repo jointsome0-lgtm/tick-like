@@ -1,0 +1,63 @@
+{
+  "schema_version": 2,
+  "lesson_uid": "7f2a4c88-9d3b-4e21-8b5a-6c0d1e9f3a72",
+  "slug": "vera-example-sorting-visualized",
+  "title": "Vera Example: Sorting, Visualized",
+  "source_url": "https://learning.example/sorting-visualized",
+  "entry": "index.html",
+  "pages": [
+    {
+      "id": "pg_7c2e91a4d0",
+      "path": "index.html",
+      "title": "Why order matters"
+    },
+    {
+      "id": "pg_3f8ba65c12",
+      "path": "related/01-bubble-sort.html",
+      "title": "Bubble sort, step by step"
+    },
+    {
+      "id": "pg_e04d7f29b8",
+      "path": "related/02-counting-the-cost.html",
+      "title": "Counting the cost"
+    }
+  ],
+  "questions": [
+    {
+      "id": "q_5a1c380f6e",
+      "page": "pg_3f8ba65c12",
+      "kind": "prediction",
+      "label": "Predict the array after one bubble pass"
+    },
+    {
+      "id": "q_92d6b04e7a",
+      "page": "pg_e04d7f29b8",
+      "kind": "free_text",
+      "label": "Why does the pass count grow quadratically?"
+    }
+  ],
+  "blocks": [
+    {
+      "id": "blk_c47e02a9d1",
+      "page": "pg_3f8ba65c12",
+      "kind": "editor",
+      "language": "python",
+      "file": "attempts/blk_c47e02a9d1/bubble.py",
+      "runner_id": "python-script-v1"
+    }
+  ],
+  "path": "vera-example-foundations",
+  "step": 2,
+  "concepts": [
+    "sorting",
+    "invariants",
+    "big-o-notation"
+  ],
+  "runtime": {
+    "profile": "interactive-local-v1"
+  },
+  "artifact_roots": [
+    "attempts"
+  ],
+  "updated_by_agent_at": "2026-07-10T09:00:00+00:00"
+}

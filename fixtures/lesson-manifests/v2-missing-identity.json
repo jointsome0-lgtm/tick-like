@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "slug": "vera-example-anonymous",
+  "title": "Vera Example: Missing Identity Fixture",
+  "entry": "index.html",
+  "pages": [
+    {
+      "id": "pg_lonely001",
+      "path": "index.html"
+    }
+  ],
+  "runtime": {
+    "profile": "legacy-display"
+  }
+}
