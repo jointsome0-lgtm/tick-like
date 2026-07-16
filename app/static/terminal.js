@@ -96,8 +96,10 @@
     localStorage.removeItem(LEGACY_SID_KEY);
     // A lesson tab must not be auto-active outside Learn: fall back to the
     // first plain tab (creating one in memory if every stored tab is a lesson
-    // tab). Transient by construction — storedActiveId still points at the
-    // lesson tab, so returning to Learn restores it as active.
+    // tab). Only the active *pointer* is transient — storedActiveId still names
+    // the lesson tab, so Learn restores it. The created tab itself becomes
+    // durable with the first persist after it gains a live session; dropping
+    // it instead would orphan a fresh PTY on every navigation.
     var act = activeTab();
     if (act && act.lesson && !onLearn()) {
       var plain = tabs.find(function (t) { return !t.lesson; });
@@ -597,11 +599,24 @@
 
     var idx = tabs.indexOf(tab);
     tabs.splice(idx, 1);
-    setActive(tabs[Math.max(0, idx - 1)] ? tabs[Math.max(0, idx - 1)].id : null);
+    // The implicit successor obeys the same off-Learn rule as boot: prefer a
+    // plain tab, and never auto-connect a lesson tab the user didn't pick.
+    var next = tabs[Math.max(0, idx - 1)] || null;
+    if (next && next.lesson && !onLearn()) {
+      next = tabs.find(function (t) { return !t.lesson; }) || next;
+    }
+    setActive(next ? next.id : null);
     persistTabs();
     renderTabs();
     if (!tabs.length) {
       hide();
+      return;
+    }
+    if (next && next.lesson && !onLearn()) {
+      // Only lesson tabs remain: show it selected but leave it disconnected.
+      tabs.forEach(function (tab) {
+        if (tab.screen) tab.screen.hidden = tab.id !== activeId;
+      });
       return;
     }
     switchTab(activeId);
