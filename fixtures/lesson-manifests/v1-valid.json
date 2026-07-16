@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "slug": "vera-example-tides",
+  "title": "Vera Example: Why Tides Happen",
+  "source_url": "https://learning.example/tides-101",
+  "entry": "index.html",
+  "related": [
+    "related/01-gravity-gradient.html",
+    "related/02-spring-and-neap.html"
+  ],
+  "updated_by_agent_at": "2026-07-01T10:20:30+00:00",
+  "x_demo_note": "Vera Example unknown v1 field — must survive migration untouched"
+}
