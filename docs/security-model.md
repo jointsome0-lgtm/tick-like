@@ -64,9 +64,13 @@ honored.)
 ### Shell environment and lesson scoping
 
 The spawned shell does not inherit the full service environment. It starts from
-a small allowlist (identity, locale, session paths; `TERM`/`PATH` normalized),
-so service-side configuration and anything secret-shaped in the service
-environment stays out of the shell and out of agents launched from it. Egress
+a small allowlist (identity, locale, session paths; `TERM`/`PATH` normalized).
+This reduces *accidental* propagation of service-side configuration into the
+shell and agents launched from it; it is **not** secret isolation. The shell is
+a same-user child of the service process and can still read the parent's live
+environment (for example via `/proc/<pid>/environ`), so anything that must stay
+hidden from the terminal user needs a real OS boundary (separate account /
+sandbox — tracked as the remaining scope of issue #16), not this list. Egress
 proxy variables are then re-derived deliberately (`EPHEMERIS_TERM_PROXY`
 override, service-configured proxy, or local auto-detection); when a proxy URL
 is shown in the terminal banner, any `user:password@` credentials are redacted.
