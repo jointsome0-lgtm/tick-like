@@ -710,6 +710,13 @@ def _read_artifact_roots(read: ManifestRead, raw: dict) -> list[str]:
             read.add("invalid-path", f"artifact root {item!r}")
             continue
         valid.append(item)
+    # `attempts` is injected BEFORE the overlap pass, so a declared root
+    # nested under it (e.g. "attempts/deep" without "attempts") is dropped
+    # as overlapping rather than surviving next to the injected mandatory
+    # root — the final set is always disjoint.
+    if DEFAULT_ARTIFACT_ROOT not in valid:
+        read.add("missing-attempts-root", "attempts injected into the read model")
+        valid.append(DEFAULT_ARTIFACT_ROOT)
     roots: list[str] = []
     for index, root in enumerate(valid):
         others = valid[:index] + valid[index + 1:]
@@ -717,13 +724,10 @@ def _read_artifact_roots(read: ManifestRead, raw: dict) -> list[str]:
             read.add("overlapping-roots", f"artifact root {root!r} repeated")
             continue
         if any(root.startswith(other + "/") for other in others):
-            # segment-wise nested under another declared root: drop the nested one
+            # segment-wise nested under another root: drop the nested one
             read.add("overlapping-roots", f"artifact root {root!r} nests under another root")
             continue
         roots.append(root)
-    if DEFAULT_ARTIFACT_ROOT not in roots:
-        read.add("missing-attempts-root", "attempts injected into the read model")
-        roots.append(DEFAULT_ARTIFACT_ROOT)
     return roots
 
 

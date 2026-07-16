@@ -833,6 +833,27 @@ with TestClient(app) as c:
           and c.get(f"/learn/lessons/{_v2_id}/files/attempts/note.txt").status_code == 404)
     _v2_roots_raw["artifact_roots"] = ["attempts"]
     bschema.write_manifest(_v2_dir / "lesson.json", _v2_roots_raw)
+    # the injected mandatory root joins the overlap pass: a nested root
+    # declared without "attempts" is dropped, the final set stays disjoint
+    _inj = bschema.read_manifest_text(json.dumps({
+        "schema_version": 2,
+        "lesson_uid": "0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60",
+        "entry": "index.html",
+        "pages": [{"id": "pg_inject001", "path": "index.html"}],
+        "artifact_roots": ["attempts/deep"],
+    }))
+    check("injected attempts root keeps the root set disjoint",
+          _inj.artifact_roots == ["attempts"]
+          and {"overlapping-roots", "missing-attempts-root"} <= _inj.codes()
+          and _inj.outcome == "degraded")
+
+    # v1 keeps its historical surface: an undeclared page under attempts/
+    # (v1 tolerance allows selecting it) still serves
+    (_v1_dir / "attempts").mkdir(exist_ok=True)
+    (_v1_dir / "attempts" / "extra.html").write_text(
+        "<html>Vera Example v1 undeclared page</html>", encoding="utf-8")
+    check("v1 undeclared page under attempts/ stays servable",
+          c.get(f"/learn/lessons/{_v1_id}/files/attempts/extra.html").status_code == 200)
 
     # the legacy flat-file bridge refuses a symlinked source (§2)
     _leg_conn = get_conn()

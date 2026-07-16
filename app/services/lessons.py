@@ -356,12 +356,15 @@ def bundle_resource_info(lesson: dict, ref: str) -> dict:
     if read.version == bundle_schema.SCHEMA_V2:
         preview_surface = declared_page or ref.startswith("assets/")
         allowed = preview_surface
+        in_artifact_root = not preview_surface and any(
+            ref == root or ref.startswith(root + "/") for root in read.artifact_roots
+        )
     else:
-        preview_surface = declared_page
+        # v1 predates artifact roots entirely; its historical surface (any
+        # non-reserved file, incl. an undeclared selected page) stays
+        # servable — only the reject/reserved/symlink blocks apply.
         allowed = ref.split("/", 1)[0] not in bundle_schema.RESERVED_NAMES
-    in_artifact_root = not preview_surface and any(
-        ref == root or ref.startswith(root + "/") for root in read.artifact_roots
-    )
+        in_artifact_root = False
     blocked = (
         read.rejected
         or not allowed
