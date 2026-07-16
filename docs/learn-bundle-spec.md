@@ -445,9 +445,11 @@ Readers MUST surface findings to the preview metadata — silently discarding
 a finding is non-conforming.
 
 Aggregation: a reader computes **all** applicable findings before
-returning. Only `manifest-unreadable`, `manifest-too-large`, and
-`unsupported-version` short-circuit (there is nothing meaningful to check
-past them); everything else — `missing-identity` included — accumulates
+returning. Only `symlinked-bundle` (checked before the manifest is opened —
+reading past it would follow the link §2 forbids), `manifest-unreadable`,
+`manifest-too-large`, and `unsupported-version` short-circuit (there is
+nothing meaningful to check past them); everything else —
+`missing-identity` included — accumulates
 across the whole manifest. The outcome is the most severe finding present
 (`rejected` > `degraded` > `ok`; informational findings never change the
 outcome). This is why one fixture can require several codes at once.
