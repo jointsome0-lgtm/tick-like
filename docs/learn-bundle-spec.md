@@ -361,7 +361,7 @@ rejected with a distinct response.
 |---|---|
 | question declared; binding and page bytes unchanged | recorded, `stale: false` |
 | question declared; page bytes differ (edit or rename) | recorded, `stale: true` |
-| question declared but now bound to a different page than submitted | recorded under the manifest's **current** binding, `stale: true` |
+| question declared but now bound to a different page than submitted | recorded under the **submitted** page identity, `stale: true` — the stored `page_id` stays paired with the `page_rev` the learner actually saw, and an idempotent replay of the same submission still matches (§6.3); the current binding is derivable from the manifest via `question_id` |
 | question not declared (removed, retired, or meaning-changed → new id) | rejected — distinct unknown-question response (D4), nothing written |
 | page file missing or unreadable at record time | recorded, `stale: true` (current revision unknowable — conservative flag) |
 
