@@ -231,17 +231,16 @@ def _finding_views(read: bundle_schema.ManifestRead) -> list[dict]:
 
 def _resolve_entry(lesson: dict, read: bundle_schema.ManifestRead, entry: str | None) -> str:
     """One owner of the page-selection rule. v2 accepts only declared
-    `pages[].path`: an undeclared stored/requested selection falls back to the
-    manifest entry (§4.2). v1 keeps its historical tolerance of undeclared
-    (but well-formed) refs. Malformed input still raises for the routes."""
+    `pages[].path`, compared exactly (§4.1/§4.2) — a normalizable variant
+    (`./index.html`, doubled slashes) is not silently repaired; it falls back
+    to the manifest entry with a visible `invalid-entry` finding, like any
+    other stale/undeclared selection. v1 keeps its historical tolerance of
+    undeclared (but well-formed) refs, where malformed input raises."""
     candidate = entry or lesson.get("current_entry")
     if read.version == bundle_schema.SCHEMA_V2:
         if candidate:
-            candidate = _clean_html_ref(candidate)
             if candidate in read.page_paths():
                 return candidate
-            # §4.2: the fallback is visible — a stale/undeclared selection
-            # must not silently report an `ok` read.
             read.add("invalid-entry", f"selection {candidate!r} is not a declared page")
         return read.entry
     return _clean_html_ref(candidate or read.entry)
@@ -601,15 +600,18 @@ def mark_opened(conn: sqlite3.Connection, lesson_id: int, entry: str) -> None:
 def set_current_entry(conn: sqlite3.Connection, lesson_id: int, entry: str) -> None:
     """Explicitly set the lesson entry, e.g. from an agent curl call.
 
-    For a v2 bundle only declared `pages[].path` values are accepted
-    (learn-bundle-spec.md §4.2); a rejected manifest refuses the write."""
-    entry = _clean_html_ref(entry)
+    For a v2 bundle only declared `pages[].path` values are accepted, compared
+    exactly — never normalized first (learn-bundle-spec.md §4.1/§4.2); a
+    rejected manifest refuses the write."""
     row = _require_lesson(conn, lesson_id)
     read = _ensure_bundle_manifest(_lesson_view(row))
     if read.rejected:
         raise LessonError("lesson manifest is rejected; fix lesson.json first")
-    if read.version == bundle_schema.SCHEMA_V2 and entry not in read.page_paths():
-        raise LessonError("entry is not a declared lesson page")
+    if read.version == bundle_schema.SCHEMA_V2:
+        if entry not in read.page_paths():
+            raise LessonError("entry is not a declared lesson page")
+    else:
+        entry = _clean_html_ref(entry)
     ts = now_iso()
     with conn:
         conn.execute(

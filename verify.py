@@ -821,6 +821,29 @@ with TestClient(app) as c:
     }))
     check("malformed source_url copy degrades to stale-metadata, not a crash",
           _badurl.outcome == "ok" and "stale-metadata" in _badurl.codes())
+    _nan = bschema.read_manifest_text('{"schema_version": 2, "x_weight": NaN}')
+    check("non-standard JSON constants are manifest-unreadable",
+          _nan.outcome == "rejected" and "manifest-unreadable" in _nan.codes())
+
+    # v2 selections compare exactly (§4.1): a normalizable variant is not repaired
+    _norm_meta = c.get(f"/learn/lessons/{_v2_id}/preview-meta",
+                       params={"entry": "./index.html"}).json()
+    check("normalizable v2 selection degrades instead of silent repair (§4.1)",
+          _norm_meta["outcome"] == "degraded"
+          and any(f["code"] == "invalid-entry" for f in _norm_meta["findings"])
+          and _norm_meta["path"].endswith("/index.html"))
+    _norm_conn = get_conn()
+    try:
+        _norm_refused = False
+        try:
+            lessons_svc.set_current_entry(_norm_conn, _v2_id, "./related/01-stage.html")
+        except lessons_svc.LessonError:
+            _norm_refused = True
+        _norm_after = lessons_svc.get_lesson(_norm_conn, _v2_id)
+    finally:
+        _norm_conn.close()
+    check("set_current_entry refuses a normalizable v2 variant, stores exact paths",
+          _norm_refused and _norm_after["current_entry"] == "related/01-stage.html")
 
     tday = c.get("/today").text
     check("Today title carries the Ephemeris identity", "· Ephemeris" in tday)

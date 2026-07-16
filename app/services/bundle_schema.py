@@ -249,6 +249,13 @@ def _is_int(value: object) -> bool:
 # --- readers (§9) -------------------------------------------------------------
 
 
+def _reject_nonstandard(const: str) -> None:
+    """NaN/Infinity/-Infinity are Python extensions, not JSON: a manifest
+    carrying them is not valid JSON and must read as manifest-unreadable —
+    the canonical writer must never re-emit a non-JSON token."""
+    raise json.JSONDecodeError(f"non-standard JSON constant {const}", "", 0)
+
+
 def read_manifest_text(
     text: str,
     *,
@@ -272,7 +279,7 @@ def read_manifest_bytes(
     if len(data) > MAX_MANIFEST_BYTES:
         return rejected_read("manifest-too-large", f"{len(data)} bytes")
     try:
-        raw = json.loads(data.decode("utf-8"))
+        raw = json.loads(data.decode("utf-8"), parse_constant=_reject_nonstandard)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         return rejected_read("manifest-unreadable", str(exc)[:MAX_FINDING_DETAIL])
     except RecursionError:  # pathologically deep JSON is unreadable, not a crash
