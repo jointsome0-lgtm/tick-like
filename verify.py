@@ -756,6 +756,10 @@ with TestClient(app) as c:
     check("symlinked page degrades the reported outcome (§9.2)",
           _symp_info["outcome"] == "degraded"
           and any(f["code"] == "symlinked-path" for f in _symp_info["findings"]))
+    _symp_bundle = lessons_svc.bundle_info(_symp)
+    check("symlinked current page degrades the TOP-LEVEL bundle_info outcome",
+          _symp_bundle["outcome"] == "degraded"
+          and any(f["code"] == "symlinked-path" for f in _symp_bundle["findings"]))
     _symp_manifest = _symp_dir / "lesson.json"
     _symp_manifest.unlink()
     _os.symlink(_symp_target, _symp_manifest)

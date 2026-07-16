@@ -417,13 +417,16 @@ def bundle_info(lesson: dict, entry: str | None = None) -> dict:
         current = _resolve_entry(lesson, read, entry)
     except LessonError:
         current = read.entry
-    # outcome/findings snapshot AFTER selection resolution, so the
-    # invalid-entry finding a stale selection adds is visible at the top
-    # level of the agent-facing bundle, not only in the nested file info.
+    # The top-level outcome/findings snapshot is the CURRENT file's — a
+    # superset of the manifest read's, taken after selection resolution and
+    # the entry's own §2/§9.2 checks. Both a stale selection's invalid-entry
+    # finding and a symlinked current page's degradation stay visible at the
+    # top of the agent-facing bundle, not only in the nested file info.
+    file = _file_info(lesson, read, current)
     info = {
         **base,
-        "outcome": read.outcome,
-        "findings": _finding_views(read),
+        "outcome": file["outcome"],
+        "findings": list(file["findings"]),
     }
     pages = read.page_paths()
     if read.version != bundle_schema.SCHEMA_V2 and current not in pages:
@@ -431,7 +434,7 @@ def bundle_info(lesson: dict, entry: str | None = None) -> dict:
     return {
         **info,
         "entry": current,
-        "file": _file_info(lesson, read, current),
+        "file": file,
         "pages": [
             {**_file_info(lesson, read, page), "current": page == current}
             for page in pages
