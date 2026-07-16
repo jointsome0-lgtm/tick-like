@@ -398,17 +398,17 @@ def bundle_resource_info(lesson: dict, ref: str) -> dict:
 def bundle_info(lesson: dict, entry: str | None = None) -> dict:
     """Agent-facing file bundle plus the app's current entry selection."""
     read = _ensure_bundle_manifest(lesson)
-    info = {
+    base = {
         "manifest": read.raw,
         "manifest_path": str(_manifest_path(lesson["slug"])),
         "schema_version": read.version,
         "profile": read.profile,
-        "outcome": read.outcome,
-        "findings": _finding_views(read),
     }
     if read.rejected:
         return {
-            **info,
+            **base,
+            "outcome": read.outcome,
+            "findings": _finding_views(read),
             "entry": None,
             "file": _file_info(lesson, read, None),
             "pages": [],
@@ -417,6 +417,14 @@ def bundle_info(lesson: dict, entry: str | None = None) -> dict:
         current = _resolve_entry(lesson, read, entry)
     except LessonError:
         current = read.entry
+    # outcome/findings snapshot AFTER selection resolution, so the
+    # invalid-entry finding a stale selection adds is visible at the top
+    # level of the agent-facing bundle, not only in the nested file info.
+    info = {
+        **base,
+        "outcome": read.outcome,
+        "findings": _finding_views(read),
+    }
     pages = read.page_paths()
     if read.version != bundle_schema.SCHEMA_V2 and current not in pages:
         pages.insert(0, current)  # v1 display tolerance; v2 never injects (§4.2)

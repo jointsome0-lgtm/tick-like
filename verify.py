@@ -647,6 +647,9 @@ with TestClient(app) as c:
     check("v2 undeclared selection falls back to the manifest entry (§4.2)",
           _v2_ghost["entry"] == "index.html"
           and all(p["entry"] != "related/99-ghost.html" for p in _v2_ghost["pages"]))
+    check("stale selection degrades the top-level bundle outcome too",
+          _v2_ghost["outcome"] == "degraded"
+          and any(f["code"] == "invalid-entry" for f in _v2_ghost["findings"]))
     _v2_ghost_meta = c.get(
         f"/learn/lessons/{_v2_id}/preview-meta",
         params={"entry": "related/99-ghost.html"}).json()
