@@ -532,3 +532,37 @@ writer is never handed a non-finite value to re-emit as `Infinity`. verify
 carries the matching probe ("overflowing float token is manifest-unreadable");
 427 green on `5388efe`. With N1 closed, no finding from this review — any
 severity — remains open on the branch head.
+
+## Resolution section — rounds 7–12 (`6a690b2..cdeda5b`)
+
+Written by the session converging this drain, documenting resolution (not an
+adversarial pass). After the closing note above, PR #48 went through six more
+PR-review-bot rounds; every push was reviewed individually by the bot and each
+round's finding was fixed in its own commit:
+
+- `6a690b2` (round 7) — placeholder version tokens now derive from manifest
+  state (`lstat` mtime), so a rejected→repaired manifest transition is visible
+  to the live-reload poller instead of pinning at a constant token.
+- `825bec6` (round 8) — a dangling symlink at the bundle directory itself
+  rejects as `symlinked-bundle`; previously `mkdir` hit `FileExistsError` and
+  the route returned 500.
+- `6fde64a` (round 9) — the preview surface (declared pages + `assets/`) wins
+  over an overlapping artifact root, so a manifest cannot 404 its own declared
+  pages by declaring a root above them.
+- `5a9fd04` (round 10) — the injected `attempts` root participates in the
+  root-overlap pass (injection happens before the pass), and v1 bundles are
+  exempt from artifact-root blocking, restoring their full historical file
+  surface.
+- `4d5b20d` (round 11) — artifact roots at or under `assets/` are dropped with
+  an `overlapping-roots` finding; `docs/learn-bundle-spec.md` §7 amended to
+  state the rule (roots MUST NOT be or nest under `assets`).
+- `cdeda5b` (round 12) — `bundle_info` snapshots outcome/findings after
+  selection resolution, so a stale v2 selection's `invalid-entry` finding
+  reaches the top-level `outcome` that agent-facing callers key off.
+
+Verify on the head: 434 passed, 0 failed; all canonical fixtures still
+byte-round-trip. Bot verdict on head `cdeda5b`: APPROVED — 👍 reaction on the
+PR body from chatgpt-codex-connector[bot] at 2026-07-16T23:20:56Z. No finding
+from any of the three review streams (this drain, the Opus second pass, the
+PR bot) remains open on the branch head. The deploy verdict above is
+unchanged: direct-loopback YES, wider deployment NO.
