@@ -17,11 +17,10 @@ from pathlib import Path
 # Isolated DB before importing the app.
 os.environ["ACTIVITY_DATA_DIR"] = tempfile.mkdtemp(prefix="al-verify-")
 os.environ.pop("EPHEMERIS_DISABLE_TERMINAL", None)
-# TestClient presents Host: testserver; admit it alongside the loopback names
-# (app/security.py reads the allowlist at import).
-os.environ.setdefault(
-    "EPHEMERIS_TRUSTED_HOSTS", "testserver,localhost,127.0.0.1,::1"
-)
+# TestClient presents Host: testserver; force the allowlist to a known value
+# (app/security.py reads it at import) so an ambient LAN setting can't 400
+# every request under test.
+os.environ["EPHEMERIS_TRUSTED_HOSTS"] = "testserver,localhost,127.0.0.1,::1"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
