@@ -825,6 +825,12 @@ with TestClient(app) as c:
     check("declared page wins over an overlapping artifact root",
           c.get(f"/learn/lessons/{_v2_id}/files/related/01-stage.html").status_code == 200
           and c.get(f"/learn/lessons/{_v2_id}/files/attempts/note.txt").status_code == 404)
+    # ...and so does the assets/ preview area when a root claims it
+    _v2_roots_raw["artifact_roots"] = ["assets", "attempts"]
+    bschema.write_manifest(_v2_dir / "lesson.json", _v2_roots_raw)
+    check("preview assets win over an overlapping artifact root",
+          c.get(f"/learn/lessons/{_v2_id}/files/assets/diagram.svg").status_code == 200
+          and c.get(f"/learn/lessons/{_v2_id}/files/attempts/note.txt").status_code == 404)
     _v2_roots_raw["artifact_roots"] = ["attempts"]
     bschema.write_manifest(_v2_dir / "lesson.json", _v2_roots_raw)
 
