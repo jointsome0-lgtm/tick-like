@@ -284,7 +284,9 @@ New app-created bundles start as `interactive-local-v1`; migrated v1 bundles
 start as `legacy-display` and are upgraded deliberately (§10, §12).
 Concretely, post-C3 `create_lesson` writes a **v2** skeleton (replacing
 today's v1 `_default_manifest`): `schema_version` 2, the DB-minted
-`lesson_uid`, `slug`/`title`/`source_url` copies, `entry` `index.html`,
+`lesson_uid`, `slug`/`title` copies, `source_url` only when the lesson has
+one (absent optionals are omitted, §9.3 — never `null` as today's v1
+default writes), `entry` `index.html`,
 `pages` with one minted id for `index.html`, `runtime`
 `{"profile": "interactive-local-v1"}`, `artifact_roots` `["attempts"]`.
 
