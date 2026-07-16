@@ -336,11 +336,16 @@ def bundle_resource_info(lesson: dict, ref: str) -> dict:
     # versions: nothing under a rejected manifest (§9.2 — no page render),
     # no reserved names, no §2 symlinked paths (checked before any resolve()
     # so the link is never followed).
-    in_artifact_root = any(
+    # A declared page always stays servable: if a manifest also claims the
+    # page's directory as an artifact root, the page (the preview surface)
+    # wins over the artifact-root block — otherwise the Learn iframe would
+    # 404 on a page the read model reports as existing.
+    declared_page = ref in read.page_paths()
+    in_artifact_root = not declared_page and any(
         ref == root or ref.startswith(root + "/") for root in read.artifact_roots
     )
     if read.version == bundle_schema.SCHEMA_V2:
-        allowed = ref in read.page_paths() or ref.startswith("assets/")
+        allowed = declared_page or ref.startswith("assets/")
     else:
         allowed = ref.split("/", 1)[0] not in bundle_schema.RESERVED_NAMES
     blocked = (

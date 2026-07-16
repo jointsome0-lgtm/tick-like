@@ -793,6 +793,15 @@ with TestClient(app) as c:
           c.get(f"/learn/lessons/{_v2_id}/files/undeclared-private.html").status_code == 404
           and c.get(f"/learn/lessons/{_v2_id}/files/assets/diagram.svg").status_code == 200
           and c.get(f"/learn/lessons/{_v2_id}/files/related/01-stage.html").status_code == 200)
+    # a declared page stays servable even when a root claims its directory
+    _v2_roots_raw = json.loads((_v2_dir / "lesson.json").read_text(encoding="utf-8"))
+    _v2_roots_raw["artifact_roots"] = ["related", "attempts"]
+    bschema.write_manifest(_v2_dir / "lesson.json", _v2_roots_raw)
+    check("declared page wins over an overlapping artifact root",
+          c.get(f"/learn/lessons/{_v2_id}/files/related/01-stage.html").status_code == 200
+          and c.get(f"/learn/lessons/{_v2_id}/files/attempts/note.txt").status_code == 404)
+    _v2_roots_raw["artifact_roots"] = ["attempts"]
+    bschema.write_manifest(_v2_dir / "lesson.json", _v2_roots_raw)
 
     # the legacy flat-file bridge refuses a symlinked source (§2)
     _leg_conn = get_conn()
