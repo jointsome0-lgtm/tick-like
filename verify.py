@@ -846,6 +846,18 @@ with TestClient(app) as c:
           _inj.artifact_roots == ["attempts"]
           and {"overlapping-roots", "missing-attempts-root"} <= _inj.codes()
           and _inj.outcome == "degraded")
+    # ...and a root intruding into the assets preview area is dropped visibly
+    _assets_root = bschema.read_manifest_text(json.dumps({
+        "schema_version": 2,
+        "lesson_uid": "0d3f2b9a-6e4c-4f7d-8a1b-5c9e7d2f4a60",
+        "entry": "index.html",
+        "pages": [{"id": "pg_assets001", "path": "index.html"}],
+        "artifact_roots": ["assets/work", "attempts"],
+    }))
+    check("asset-nested artifact root is dropped with overlapping-roots",
+          _assets_root.artifact_roots == ["attempts"]
+          and "overlapping-roots" in _assets_root.codes()
+          and _assets_root.outcome == "degraded")
 
     # v1 keeps its historical surface: an undeclared page under attempts/
     # (v1 tolerance allows selecting it) still serves

@@ -376,7 +376,10 @@ lives. Rules:
   under) a reserved name; roots MUST be disjoint — segment-wise: no root is
   a path-segment prefix of another (`attempts` vs `attempts/deep` overlap;
   `attempts` vs `attempts-extra` do not). A nested root is dropped with an
-  `overlapping-roots` finding (degraded);
+  `overlapping-roots` finding (degraded). A root also MUST NOT be, or nest
+  under, `assets` — the presentation area pages reference (§2); such a root
+  is dropped the same way (C3 review addition: otherwise the preview file
+  surface and artifact discovery would claim the same files);
 - the list MUST always include `attempts` (writers); a manifest missing it
   gets `attempts` injected into the read model with a
   `missing-attempts-root` finding (informational);

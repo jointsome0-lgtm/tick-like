@@ -709,6 +709,13 @@ def _read_artifact_roots(read: ManifestRead, raw: dict) -> list[str]:
         if not valid_v2_path(item):
             read.add("invalid-path", f"artifact root {item!r}")
             continue
+        if item == "assets" or item.startswith("assets/"):
+            # learner-work roots may not intrude into the presentation area
+            # pages reference (§2/§7) — otherwise the preview file surface
+            # and artifact discovery would claim the same files
+            read.add("overlapping-roots",
+                     f"artifact root {item!r} intrudes into the assets preview area")
+            continue
         valid.append(item)
     # `attempts` is injected BEFORE the overlap pass, so a declared root
     # nested under it (e.g. "attempts/deep" without "attempts") is dropped
