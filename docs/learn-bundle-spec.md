@@ -243,8 +243,10 @@ rejects writes for undeclared `question_id`s (D4/D5).
 - `runner_id`: optional, `^[a-z0-9-]{1,64}$`. **The manifest never contains
   commands, arguments, env vars, or shell text.** A `runner_id` is an opaque
   key into a registry of fixed command templates compiled into the app
-  (F3). Absent ⇒ save-only editor, no Run affordance. Unknown ⇒ Run
-  disabled with a visible `unknown-runner` finding; the editor still works.
+  (F3). Absent ⇒ save-only editor, no Run affordance. Unknown but
+  grammar-valid ⇒ Run disabled with a visible `unknown-runner` finding; the
+  editor still works. Violating the grammar ⇒ the field is dropped
+  (`invalid-value`), leaving the same save-only editor as absent.
 
 ### 4.5 Opaque refs: `path`, `step`, `concepts`
 
@@ -474,7 +476,7 @@ outcome). This is why one fixture can require several codes at once.
 | `symlinked-bundle`   | rejected  | §2; the bundle directory itself, or `lesson.json` itself, is a symlink |
 | `symlinked-path`     | degraded  | §2; a referenced path resolves through a symlink — treated as a missing file |
 | `type-mismatch`      | degraded  | §4; a field's JSON type contradicts the schema (field treated as absent) or a list item is not an object (item dropped) |
-| `invalid-value`      | info      | an optional display/value field (`pages[].title`, `label`, `kind`, `language`, `updated_by_agent_at`) violates its grammar or limit; the field is dropped, the item stays |
+| `invalid-value`      | info      | an optional display/value field (`pages[].title`, `label`, `kind`, `language`, `runner_id`, `updated_by_agent_at`) violates its grammar or limit; the field is dropped, the item stays |
 | `missing-attempts-root` | info   | §7; `attempts` injected into the read model |
 | `stale-metadata`     | info      | `slug`/`title`/`source_url` copy differs from DB or violates its own grammar/limit; DB wins |
 | `duplicate-concept`  | info      | §4.5; deduped |
