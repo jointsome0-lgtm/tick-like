@@ -165,3 +165,49 @@ trust or lifecycle finding regressed. Do not treat the environment allowlist as
 secret isolation, and do not treat the relative-path change as complete until
 the missing-file placeholder is corrected. Wider or proxy-adjacent terminal
 deployment remains unsupported.
+
+## Addendum — 2026-07-16 (`5d7c226`, `ad11d31`)
+
+**Scope and method:** re-applied the standing brief to `git show 5d7c226` and
+`git show ad11d31`, then read the complete changed functions and their route,
+query-parameter, workspace-preparation, preview, and verifier call paths. The
+review also checked the two commits together for regressions against the
+protections confirmed above.
+
+**Prior findings:** T1 is accepted posture for this slice. The underlying
+same-user `/proc` access remains, but `docs/security-model.md` now accurately
+describes the allowlist as accidental-inheritance reduction rather than secret
+isolation and points real isolation to the remaining issue #16 scope. T2 is
+resolved: the missing-file placeholder now renders `info["rel_path"]`, and the
+new route-level checks cover both the rendered placeholder and preview-meta
+JSON. T3 is resolved: `prepare_terminal_workspace()` now documents `None` as a
+mandatory refusal for lesson-scoped callers and says that plain terminals do
+not call it.
+
+**PR-bot follow-up:** resolved. Starlette distinguishes an absent `lesson`
+parameter (`None`) from a present-but-empty one (`""`). `_create_session()` now
+tests `lesson is not None`, so unknown, empty, and junk values all reach
+`prepare_terminal_workspace()` and raise `_LessonWorkspaceError` before proxy
+probing, PTY allocation, or shell spawn when preparation returns `None`. An
+absent parameter alone retains the intended plain-terminal repository-root
+behavior. The verifier exercises all three refusal classes.
+
+**New findings:** none (no Critical, High, Medium, Low, or Info findings).
+
+**Verification:** `git diff 5d7c226^ ad11d31 --check` passed;
+`.venv/bin/python -m compileall -q app verify.py verify_restore.py` passed; a
+direct Starlette `QueryParams` probe confirmed absent → `None` and
+`lesson=` → `""`; an invented missing-entry probe confirmed that the generated
+HTML contains the bundle-relative path and neither the absolute file path nor
+the data-root path; and direct workspace-preparation probes returned `None` for
+empty, junk, and unknown slugs. A bounded full `verify.py` run again emitted
+only the known TestClient deprecation warning and timed out after 55 seconds
+without assertion output, matching the environment limitation recorded in the
+original report; this addendum therefore does not independently claim the full
+`368`-check result.
+
+**Updated deploy verdict (`61b6d65..ad11d31`): direct-loopback deployment: YES,
+with T1 accepted posture and no open review finding.** T2, T3, and the empty
+`?lesson=` fail-open are resolved without weakening the previously confirmed
+terminal trust, lifecycle, opt-in, or lesson-containment controls. Wider or
+proxy-adjacent terminal deployment remains unsupported.
