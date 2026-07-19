@@ -1128,7 +1128,11 @@ _LESSON_PREVIEW_CSP_LEGACY = (
 # inline stays allowed while every remote source, eval vector (data:/blob:
 # script, 'unsafe-eval'), form submission, popup, download, plugin, nested
 # frame (default-src 'none') and network call (connect-src 'none' — the D2
-# bridge is postMessage, not fetch) is refused.
+# bridge is postMessage, not fetch) is refused. WebRTC is not governed by
+# connect-src; CSP3 gates it separately, so `webrtc 'block'` closes the
+# RTCPeerConnection/STUN path where enforced (Firefox today; Chromium has
+# not shipped the directive and ignores it — that engine keeps WebRTC as
+# part of the documented residual below).
 #
 # Known residual (spec §5): SAME-FRAME NAVIGATION is not blocked — a page can
 # still `location.href = remote` or follow a plain link, and the destination
@@ -1147,6 +1151,7 @@ _LESSON_PREVIEW_CSP_INTERACTIVE = (
     "media-src 'self' data: blob:; "
     "font-src 'self' data:; "
     "connect-src 'none'; "
+    "webrtc 'block'; "
     "form-action 'none'; object-src 'none'; base-uri 'none'; "
     "frame-ancestors 'self'"
 )

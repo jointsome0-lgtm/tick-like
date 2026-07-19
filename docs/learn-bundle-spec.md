@@ -299,8 +299,11 @@ D1 (landed) pins the enforcement:
   (pages are self-contained, pinned libraries under `assets/` are
   same-origin); `img-src`/`media-src` `'self' data: blob:`;
   `font-src 'self' data:`; `connect-src 'none'` (the D2 bridge is
-  postMessage, not fetch); `form-action`/`object-src`/`base-uri` `'none'`;
-  `frame-ancestors 'self'`. No remote loads, no eval vectors (no
+  postMessage, not fetch); `webrtc 'block'` (WebRTC is not governed by
+  `connect-src`; the CSP3 directive closes the RTCPeerConnection/STUN
+  channel where enforced — Firefox today, Chromium ignores it and keeps
+  WebRTC in the residual below); `form-action`/`object-src`/`base-uri`
+  `'none'`; `frame-ancestors 'self'`. No remote loads, no eval vectors (no
   `'unsafe-eval'`, no `data:`/`blob:` script), no nested frames.
 - Bridge eligibility = manifest parsed as v2 AND not rejected AND profile
   `interactive-local-v1`. Degraded v2 findings do not revoke it (identity
@@ -321,8 +324,11 @@ D1 (landed) pins the enforcement:
   CSP3's `navigate-to` was removed from the spec (Sept 2022) without any
   browser implementation, and no iframe sandbox token governs a frame
   navigating itself. Every in-document channel (fetch/beacon/WebSocket,
-  forms, popups, downloads, remote subresources) IS closed, so the channel
-  requires a whole-document navigation the learner can see. Accepted for
+  forms, popups, downloads, remote subresources; WebRTC on engines that
+  enforce `webrtc 'block'`) IS closed, so on those engines the channel
+  requires a whole-document navigation the learner can see; on engines
+  without the `webrtc` directive (Chromium today) WebRTC joins this
+  residual. Accepted for
   the loopback single-user deployment; D2's parent runtime — whose bridge
   port dies with the document — is the layer that observes a frame leaving
   the lesson and can tear it down/reload it.

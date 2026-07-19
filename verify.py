@@ -862,6 +862,7 @@ with TestClient(app) as c:
           and _d1_prev.headers.get("content-security-policy") == _CSP_INT)
     check("strict CSP: no network, no eval, no forms/popups/downloads",
           "connect-src 'none'" in _d1_csp
+          and "webrtc 'block'" in _d1_csp
           and "default-src 'none'" in _d1_csp
           and "form-action 'none'" in _d1_csp
           and "base-uri 'none'" in _d1_csp
