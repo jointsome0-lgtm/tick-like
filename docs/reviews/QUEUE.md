@@ -64,7 +64,14 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   schema v10 as landed on main, the `lessons.uid` step is renumbered to
   v11 with its content unchanged, `verify.py` keeps main's
   SCHEMA_VERSION-relative version check, both branches' Done entries
-  kept — verify 473, verify_restore 28)
+  kept — verify 473, verify_restore 28; fe98b63 (PR-bot round 19 on the
+  merge): `_migrate_to_11` re-runs the IF-NOT-EXISTS retro DDL so a DB
+  that ran the uid step under its pre-renumber v10 label still gains
+  `retro_entries`, and a stale v2 selection is no longer erased by its
+  own fallback — `bundle_info` exposes `stale_selection`, `GET /learn`
+  skips persisting the fallback, and the preview-meta poll URL carries
+  the stale candidate so each poll re-derives the invalid-entry finding
+  — verify 477, verify_restore 28)
 
 - [x] 2026-07-16 — 5ae5017, eeb71f1, ecee1f2, ff9a3f0, 4b04757, ba2bc3c,
   2851f69, 89adcbc, 38dd11b, 9dc0fc6, e7a2068, 250cd66 —
