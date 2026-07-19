@@ -1166,6 +1166,16 @@ with TestClient(app) as c:
     check("no usable title anywhere stops the migration",
           _mig_nometa.action == mig.ACTION_STOP
           and any("no usable title" in r for r in _mig_nometa.reasons))
+    # the §4 bound is on the emitted value's length, not its stripped form
+    (_mig_head_dir / "lesson.json").write_text(json.dumps({
+        "schema_version": 1, "entry": "index.html",
+        "title": " " + "x" * 240 + " ",
+    }) + "\n", encoding="utf-8")
+    _mig_longtitle = mig.plan_bundle(
+        _mig_head_dir, dict(_mig_head_db, current_entry=None))
+    check("over-long title copy falls back to the DB row, never emitted (§4)",
+          _mig_longtitle.action == mig.ACTION_MIGRATE
+          and json.loads(_mig_longtitle.new_text)["title"] == "Vera Example Head")
     (_mig_head_dir / "lesson.json").write_text(json.dumps({
         "schema_version": 1,
         "entry": "index.html",

@@ -327,8 +327,13 @@ def _build_v2(
     # non-conforming manifest.
     copy_checks = {
         "slug": _valid_slug,
+        # The bound applies to the emitted value's actual length (§4), not to
+        # its stripped form — a 242-char title with 240 non-blank chars must
+        # not be written.
         "title": lambda v: (
-            isinstance(v, str) and 0 < len(v.strip()) <= bundle_schema.MAX_TITLE_LEN
+            isinstance(v, str)
+            and bool(v.strip())
+            and len(v) <= bundle_schema.MAX_TITLE_LEN
         ),
     }
     for name, valid in copy_checks.items():
@@ -646,11 +651,15 @@ def run(*, dry_run: bool, slugs: list[str] | None) -> int:
             # The DB row is part of the plan's input (uid copy, current_entry
             # head-fold): re-read it right before the write and refuse a
             # stale plan, exactly like the manifest-bytes guard in apply.
+            # Every DB value the plan can consume is compared: uid (identity
+            # copy), current_entry (head-fold), title (slug/title fallback).
+            # A drifted slug makes the by-slug re-read return None.
             fresh = _reread_lesson(lesson["slug"])
             if (
                 fresh is None
                 or fresh.get("uid") != lesson.get("uid")
                 or fresh.get("current_entry") != lesson.get("current_entry")
+                or fresh.get("title") != lesson.get("title")
             ):
                 print("    ERROR: refused: DB lesson row changed since planning; "
                       "re-plan and rerun")
