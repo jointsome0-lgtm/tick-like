@@ -1166,6 +1166,23 @@ with TestClient(app) as c:
     check("no usable title anywhere stops the migration",
           _mig_nometa.action == mig.ACTION_STOP
           and any("no usable title" in r for r in _mig_nometa.reasons))
+    # an invalid source_url copy is never emitted: DB value wins, else omitted
+    (_mig_head_dir / "lesson.json").write_text(json.dumps({
+        "schema_version": 1, "entry": "index.html",
+        "source_url": "not a url",
+    }) + "\n", encoding="utf-8")
+    _mig_badsrc = mig.plan_bundle(_mig_head_dir, dict(
+        _mig_head_db, current_entry=None,
+        source_url="https://learning.example/vera-head"))
+    _mig_badsrc2 = mig.plan_bundle(_mig_head_dir, dict(_mig_head_db, current_entry=None))
+    check("invalid source_url copy: DB fallback, else omitted (§4)",
+          _mig_badsrc.action == mig.ACTION_MIGRATE
+          and json.loads(_mig_badsrc.new_text)["source_url"]
+          == "https://learning.example/vera-head"
+          and _mig_badsrc2.action == mig.ACTION_MIGRATE
+          and "source_url" not in json.loads(_mig_badsrc2.new_text)
+          and any("omitted" in n for n in _mig_badsrc2.notes))
+
     # the §4 bound is on the emitted value's length, not its stripped form
     (_mig_head_dir / "lesson.json").write_text(json.dumps({
         "schema_version": 1, "entry": "index.html",

@@ -347,8 +347,18 @@ def _build_v2(
             stops.append(f"no usable {name} in the v1 manifest or the DB row")
     if stops:
         return None
-    if raw.get("source_url") is not None:
-        out["source_url"] = raw["source_url"]  # a null copy is omitted (§10)
+    src = raw.get("source_url")
+    if src is not None:  # a null copy is omitted (§10)
+        db_src = db_lesson.get("source_url")
+        # source_url is optional but grammar-bound (§4): a conforming writer
+        # never emits an invalid copy — DB value wins over dropping it.
+        if isinstance(src, str) and bundle_schema._valid_source_url(src):
+            out["source_url"] = src
+        elif isinstance(db_src, str) and bundle_schema._valid_source_url(db_src):
+            out["source_url"] = db_src
+            notes.append("source_url copy filled from the DB row")
+        else:
+            notes.append("invalid source_url copy omitted from the v2 manifest")
     out["entry"] = entry
     out["pages"] = [
         {"id": deterministic_page_id(uid, path), "path": path, **extras.get(path, {})}
