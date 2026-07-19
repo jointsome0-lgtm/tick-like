@@ -308,6 +308,11 @@ D1 (landed) pins the enforcement:
 - The preview metadata carries the effective `profile` and `bridge`; the
   iframe `sandbox` attribute is unchanged until D2 (the header-level
   `sandbox` directive also covers a page opened outside the iframe).
+- An existing page's live-reload version token folds the effective profile
+  in, so a manifest-only profile flip (either direction) reloads the open
+  document: the metadata never advertises a policy the displayed document
+  was not actually served under. D2 additionally binds bridge setup to the
+  loaded revision, not to a later uncorrelated metadata read.
 - An unregistered profile value reaching the CSP chooser (unreachable via
   the readers) selects the narrow interactive policy, never the wide one.
 - Known residual: same-frame navigation (script `location` assignment, a

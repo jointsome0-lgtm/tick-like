@@ -326,7 +326,14 @@ def _file_info(lesson: dict, read: bundle_schema.ManifestRead, entry: str | None
         # server's absolute filesystem layout (home dir, username) to clients.
         "rel_path": f"{lesson['slug']}/{entry}",
         "exists": exists,
-        "version": str(stat.st_mtime_ns) if stat else f"missing:{_manifest_version(lesson)}",
+        # The reload token folds the effective profile in (drain C1): a
+        # manifest-only profile flip must reload the open page so the
+        # displayed document was actually served under the CSP the metadata
+        # now advertises — D2 grants the bridge against this binding.
+        "version": (
+            f"{stat.st_mtime_ns}:{read.profile}"
+            if stat else f"missing:{_manifest_version(lesson)}"
+        ),
         "size": stat.st_size if stat else 0,
         "outcome": outcome,
         "findings": findings,

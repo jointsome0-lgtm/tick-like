@@ -914,6 +914,34 @@ with TestClient(app) as c:
           _csp_for("weird-unregistered") == _CSP_INT
           and _csp_for("legacy-display") == _CSP_LEG
           and _csp_for("interactive-local-v1") == _CSP_INT)
+    # drain C1: an effective-profile transition must invalidate the open
+    # page's reload token in BOTH directions, page bytes untouched — the
+    # displayed document must have been served under the CSP the metadata
+    # advertises before D2 grants anything against it
+    _d1_v_int = c.get(f"/learn/lessons/{_v2_id}/preview-meta").json()["version"]
+    bschema.write_manifest(
+        _v2_dir / "lesson.json", dict(_v2_raw, runtime={"profile": "legacy-display"}))
+    _d1_leg_meta = c.get(f"/learn/lessons/{_v2_id}/preview-meta").json()
+    _d1_leg_file = c.get(f"/learn/lessons/{_v2_id}/files/index.html")
+    bschema.write_manifest(_v2_dir / "lesson.json", _v2_raw)  # restore
+    _d1_v_back = c.get(f"/learn/lessons/{_v2_id}/preview-meta").json()["version"]
+    check("profile flip changes the reload token both ways, bytes untouched",
+          _d1_leg_meta["version"] != _d1_v_int
+          and _d1_v_back == _d1_v_int
+          and _d1_leg_meta["profile"] == "legacy-display"
+          and _d1_leg_meta["bridge"] is False
+          and _d1_leg_file.headers.get("content-security-policy") == _CSP_LEG)
+    # identity-mismatch (opus pass): a v2 manifest whose lesson_uid disagrees
+    # with the DB row is forced legacy — profile and bridge revoke together
+    bschema.write_manifest(
+        _v2_dir / "lesson.json",
+        dict(_v2_raw, lesson_uid="00000000-0000-4000-8000-000000000000"))
+    _d1_mid_meta = c.get(f"/learn/lessons/{_v2_id}/preview-meta").json()
+    bschema.write_manifest(_v2_dir / "lesson.json", _v2_raw)  # restore
+    check("identity-mismatch forces legacy profile and revokes the bridge",
+          any(f["code"] == "identity-mismatch" for f in _d1_mid_meta["findings"])
+          and _d1_mid_meta["profile"] == "legacy-display"
+          and _d1_mid_meta["bridge"] is False)
 
     # §2 symlink policy: a page that resolves through a symlink is missing
     _symp_conn = get_conn()
