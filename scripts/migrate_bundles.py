@@ -595,6 +595,12 @@ def run(*, dry_run: bool, slugs: list[str] | None) -> int:
             rollback_dir / ROLLBACK_MANIFEST,
             json.dumps({"created_at": now_iso(), "entries": []}, indent=2) + "\n",
         )
+        # The rollback dir must be durably DISCOVERABLE before any manifest
+        # is mutated: fsync the new directory and the parents whose entries
+        # were just created (migrations/ itself may be new too).
+        _fsync_dir(rollback_dir)
+        _fsync_dir(MIGRATIONS_DIR)
+        _fsync_dir(DATA_DIR)
 
     failed = 0
     for lesson, plan in plans:
