@@ -73,8 +73,13 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
   let generation = 0;
   /* True while the pending navigation is one WE initiated (the server-
    * rendered src counts); a load without it is the document navigating
-   * itself somewhere — never bridged, forced back while budget lasts. */
-  let navPending = true;
+   * itself somewhere — never bridged, forced back while budget lasts.
+   * This module is fetched separately and can initialise AFTER the initial
+   * load already fired; the inline observer in learn.html (attached at
+   * parse time, before any load task can have dispatched) counts loads in
+   * data-loaded, so a settled document is never mistaken for our pending
+   * navigation (PR-55 round 2). */
+  let navPending = !(Number(frame.dataset["loaded"]) > 0);
   let reasserts = 0;
 
   /* Per-document handshake state (cleared on every load/teardown). */

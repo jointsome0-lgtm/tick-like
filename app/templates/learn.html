@@ -139,6 +139,15 @@
           data-meta-url="{{ selected.preview_meta_url }}"
           data-version="{{ selected.file.version }}"
           sandbox="{{ selected.sandbox if selected.sandbox is defined else 'allow-scripts allow-forms allow-popups allow-downloads' }}"></iframe>
+        {# Early load observer: parses (and runs) synchronously right after
+           the iframe, before any load task can dispatch — so learn-bridge.js
+           (a separately fetched module that may arrive late) can tell a
+           settled document from a still-pending initial navigation. #}
+        <script>
+          document.getElementById("lesson-preview-frame").addEventListener("load", function () {
+            this.dataset.loaded = String((Number(this.dataset.loaded) || 0) + 1);
+          });
+        </script>
       </div>
       {% else %}
       <div class="learn-empty">

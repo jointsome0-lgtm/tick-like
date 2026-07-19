@@ -1029,6 +1029,12 @@ with TestClient(app) as c:
     check("learn.html loads learn-bridge.js as a module",
           'type="module"' in _d2_learn_int
           and "learn-bridge.js" in _d2_learn_int)
+    # the inline early-load observer must sit in the document so the late-
+    # fetched module can distinguish a settled document from a pending
+    # initial navigation (PR-55 round 2)
+    check("learn.html carries the inline early-load observer",
+          "this.dataset.loaded" in _d2_learn_int
+          and 'addEventListener("load"' in _d2_learn_int)
     # the poll moved out of app.js — one runtime owns reload AND handshake
     _d2_appjs = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
     check("app.js no longer touches the preview frame",
