@@ -1166,6 +1166,23 @@ with TestClient(app) as c:
           _mig_soon.action == mig.ACTION_MIGRATE
           and json.loads(_mig_soon.new_text)["updated_by_agent_at"] == "soon-ish")
 
+    # §10 positive path: unknown members of an object-form related item are
+    # copied verbatim onto the generated page object, in canonical key order
+    (_mig_head_dir / "lesson.json").write_text(json.dumps({
+        "schema_version": 1,
+        "entry": "index.html",
+        "related": [{"path": "related/01-extra.html",
+                     "x_meta": "Vera Example extra member"}],
+    }) + "\n", encoding="utf-8")
+    _mig_extras = mig.plan_bundle(_mig_head_dir, dict(_mig_head_db, current_entry=None))
+    _mig_extras_page = json.loads(_mig_extras.new_text)["pages"][1]
+    check("object-form item extras ride the generated page object (§10)",
+          _mig_extras.action == mig.ACTION_MIGRATE
+          and list(_mig_extras_page) == ["id", "path", "x_meta"]
+          and _mig_extras_page["x_meta"] == "Vera Example extra member"
+          and _mig_extras_page["id"]
+          == mig.deterministic_page_id(_mig_head_db["uid"], "related/01-extra.html"))
+
     # a manifest edited between plan and apply is refused, never overwritten
     _mig_race = mig.plan_bundle(_mig_head_dir, dict(_mig_head_db, current_entry=None))
     _mig_race_edit = json.dumps({
@@ -1204,6 +1221,12 @@ with TestClient(app) as c:
         "object-form related item carrying a v2 page-object member",
         {"schema_version": 1, "entry": "index.html",
          "related": [{"path": "related/01-x.html", "id": "boom"}]},
+        "colliding with the v2 page object")
+    _mig_stop_case(
+        "colliding member on a DROPPED (duplicate) item still stops",
+        {"schema_version": 1, "entry": "index.html",
+         "related": ["related/01-x.html",
+                     {"path": "related/01-x.html", "id": "legacy"}]},
         "colliding with the v2 page object")
     _mig_stop_case(
         "normalized page path violating the v2 grammar",

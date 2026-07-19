@@ -31,6 +31,10 @@ Rollback restores the recorded pre-migration manifest bytes only while the
 on-disk manifest still hashes to the migrated output; a manifest edited since
 migration (e.g. by the study agent) is refused, never overwritten.
 
+A run is per-bundle, not all-or-nothing: every migratable bundle is applied
+even when others stop, and the exit code still reports the stops — dry-run
+first, then rerun after resolving what stopped.
+
 Exit code 0 = nothing stopped or failed; 1 otherwise. Writes land in
 data/migrations/ (inside the gitignored data/ area, outside every bundle).
 """
@@ -145,6 +149,18 @@ def _hash_pages(bundle_dir: Path, paths: list[str], notes: list[str]) -> dict[st
     return hashes
 
 
+def _check_item_collisions(label: str, item: dict, stops: list[str]) -> None:
+    """§10: an object-form page item carrying `id`/`title` has no lossless v2
+    mapping. Like the C3 duplicate rules, this is a raw-declaration fact — it
+    stops the migration even when the v1 read model drops the item, because a
+    rewrite would silently discard the colliding member."""
+    for key in PAGE_OBJECT_COLLISIONS:
+        if key in item:
+            stops.append(
+                f"object-form {label} carries {key!r}, colliding with the v2 page object"
+            )
+
+
 def _collect_page_extras(
     raw: dict, entry: str, stops: list[str]
 ) -> tuple[list[str], dict[str, dict]]:
@@ -155,16 +171,12 @@ def _collect_page_extras(
 
     raw_entry = raw.get("entry")
     if isinstance(raw_entry, dict):
+        _check_item_collisions("entry", raw_entry, stops)
         # Extras ride only a page the item actually generated (§10): when the
         # object's own path was dropped and entry fell back, nothing is copied.
         cleaned = bundle_schema.clean_v1_ref(raw_entry.get("path"), html_only=True)
         if cleaned == entry:
             entry_extras = {k: v for k, v in raw_entry.items() if k != "path"}
-            for key in PAGE_OBJECT_COLLISIONS:
-                if key in entry_extras:
-                    stops.append(
-                        f"object-form entry carries {key!r}, colliding with the v2 page object"
-                    )
             if entry_extras:
                 extras[entry] = entry_extras
 
@@ -174,18 +186,14 @@ def _collect_page_extras(
     seen: list[str] = []
     for item in related:
         candidate = item.get("path") if isinstance(item, dict) else item
+        if isinstance(item, dict):
+            _check_item_collisions(f"related item {candidate!r}", item, stops)
         ref = bundle_schema.clean_v1_ref(candidate, html_only=True)
         if ref is None or ref == entry or ref in seen:
             continue  # dropped/deduplicated by the v1 read model; surfaced as findings
         seen.append(ref)
         if isinstance(item, dict):
             item_extras = {k: v for k, v in item.items() if k != "path"}
-            for key in PAGE_OBJECT_COLLISIONS:
-                if key in item_extras:
-                    stops.append(
-                        f"object-form related item {ref!r} carries {key!r}, "
-                        "colliding with the v2 page object"
-                    )
             if item_extras:
                 extras[ref] = item_extras
     return seen, extras
@@ -401,7 +409,9 @@ def rollback(rollback_dir: Path) -> int:
             failures += 1
             continue
         manifest_path = LESSONS_DIR / slug / MANIFEST_NAME
-        old_bytes = (rollback_dir / entry["file"]).read_bytes()
+        # The copy path is derived from the validated slug, like the write
+        # path — the ledger's `file` value is a record, never a path input.
+        old_bytes = (rollback_dir / f"{slug}.lesson.json").read_bytes()
         if hashlib.sha256(old_bytes).hexdigest() != entry["old_sha256"]:
             print(f"[refused] {slug} — rollback copy does not match its recorded hash")
             failures += 1
@@ -460,8 +470,16 @@ def run(*, dry_run: bool, slugs: list[str] | None) -> int:
     rollback_dir: Path | None = None
     to_apply = [pair for pair in plans if pair[1].action == ACTION_MIGRATE]
     if to_apply and not dry_run:
-        rollback_dir = MIGRATIONS_DIR / f"v1v2-{now_stamp()}"
-        rollback_dir.mkdir(parents=True, exist_ok=False)
+        base = MIGRATIONS_DIR / f"v1v2-{now_stamp()}"
+        rollback_dir = base
+        suffix = 2
+        while True:  # now_stamp is second-granular; two runs may share it
+            try:
+                rollback_dir.mkdir(parents=True, exist_ok=False)
+                break
+            except FileExistsError:
+                rollback_dir = base.with_name(f"{base.name}-{suffix}")
+                suffix += 1
         bundle_schema.atomic_write_text(
             rollback_dir / ROLLBACK_MANIFEST,
             json.dumps({"created_at": now_iso(), "entries": []}, indent=2) + "\n",
