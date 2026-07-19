@@ -36,6 +36,12 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   token string. Browser e2e fixtures for six handshake scenarios are
   committed under `fixtures/lesson-bridge/`. First TypeScript sources in the
   repo (issue #42): tsc-emitted JS is committed and served as-is.
+  Follow-ups on the same surface: 8cfcb9d (poll re-arms an unarmed settled
+  document), b74fd0e (inline early-load observer anchors navPending),
+  4315bab (arm only settled documents; reload on manifest-only identity
+  drift), and the round-4 commit (content-bound version token for bridge
+  pages + inode-keyed digest cache; announcements answered on live receipt
+  only, buffer removed).
 
 ## Done
 

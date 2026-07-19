@@ -88,11 +88,6 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
   let port: MessagePort | null = null;
   let protocolErrors = 0;
   let rejects = 0;
-  /* A child typically announces `ready` the moment its script runs — before
-   * the identity-binding meta fetch resolves. The latest valid announcement
-   * from the current document is buffered and answered on arm; navigation
-   * clears it with the rest of the document state. */
-  let pendingReady: unknown = null;
 
   const teardown = (): void => {
     if (port) port.close();
@@ -101,7 +96,6 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     granted = false;
     protocolErrors = 0;
     rejects = 0;
-    pendingReady = null;
   };
 
   const fetchMeta = async (): Promise<PreviewMeta | null> => {
@@ -173,11 +167,11 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         page_id: meta.bridge_page.page_id,
         page_rev: meta.bridge_page.page_rev,
       };
-      if (pendingReady !== null) {
-        const queued = pendingReady;
-        pendingReady = null;
-        if (isReady(queued)) handleReady(queued);
-      }
+      /* Deliberately NO buffered-announcement flush here (PR-55 round 4):
+       * an announcement held across this async bind could be answered into
+       * a successor document after a same-frame navigation. Announcements
+       * are answered only on live receipt; children retry (ABI §2), so the
+       * next announcement lands with armed set. */
     }
   };
 
@@ -326,12 +320,11 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     if (size === null || size > MAX_READY_CHARS) return;
     if (!isReady(ev.data)) return;
     if (armed === null) {
-      pendingReady = ev.data; // answered when (and if) identity arms
+      /* Not armed yet: drop the announcement (never buffered — see
+       * armFromMeta) and, for a settled document that will never get a
+       * load-driven bind because the module initialised after the initial
+       * load, start one. The child's retry lands once armed. */
       if (generation === 0 && !navPending) {
-        /* Settled document (the inline observer saw its load) with no
-         * load-driven bind ever coming — the module initialised after the
-         * initial load. Bind here; never during a pending navigation (the
-         * announcement could be the outgoing document's, PR-55 round 3). */
         void bind(generation);
       }
       return;

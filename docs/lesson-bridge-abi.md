@@ -60,11 +60,13 @@ has finished binding identity for the freshly loaded document (and, across
 a parent-initiated reload, possibly before the parent processed the load).
 Children MUST therefore re-announce `ready` periodically (every 250–500 ms
 is fine) until they receive a `welcome` or `reject`, giving up after the
-~2 s silence budget below. The parent additionally buffers the latest valid
-announcement while its identity binding is in flight and answers it on arm,
-so in the common case the first or second announcement completes the
-handshake. Duplicate announcements after a `welcome` are ignored (one grant
-per document).
+~2 s silence budget below. The parent answers announcements only on live
+receipt while it is armed; earlier ones are deliberately dropped, never
+buffered — an announcement held across the parent's async identity binding
+could otherwise be answered into a successor document after a same-frame
+navigation. In the common case a retry within the first half-second
+completes the handshake. Duplicate announcements after a `welcome` are
+ignored (one grant per document).
 
 On a valid announcement whose `abi` contains a version the parent speaks
 (v1: the literal `1`), the parent replies **once per loaded document**:
@@ -148,6 +150,14 @@ that is the forward-compatibility room minor additions use.
   that identity, and `page_rev` still describes the manifest page's bytes
   on disk — which is what the attempt backend records against (§6.3).
   Post-load self-navigation IS detected and re-asserted.
+
+  Related delivery residual: the iframe's `WindowProxy` survives
+  navigation, so a `welcome` (or port message) already in flight when the
+  frame self-navigates can be delivered to the successor document — the
+  browser gives the sender no way to scope delivery to one document. The
+  successor is the same trust domain (lesson content), ABI v1 carries no
+  capability, and any capability-bearing extension (D4+) MUST re-validate
+  identity server-side per operation instead of trusting port possession.
 - **Profile flip:** the effective profile is folded into the version token,
   so a manifest-only flip reloads the document under the new CSP and sandbox
   tokens; the metadata never advertises a policy the displayed document was

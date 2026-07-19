@@ -193,27 +193,54 @@ def _read_regular_no_follow(path: Path) -> str | None:
             os.close(fd)
 
 
+# Digest cache for the metadata poll (D2 drain L3): the client polls every
+# ~1.2s and each eligible poll would otherwise stream the whole page through
+# sha256. Keyed by the full inode identity INCLUDING ctime_ns — a writer can
+# restore mtime after replacing bytes, but any in-place write or utime call
+# moves ctime (only privileged clock games defeat it), and a rename swap
+# changes the inode, so the mtime-preserving replacement the drain probed
+# (L2) misses this cache and gets re-hashed.
+_PAGE_DIGEST_CACHE: dict[str, tuple[tuple, str]] = {}
+_PAGE_DIGEST_CACHE_MAX = 64
+
+
+def _digest_key(st: os.stat_result) -> tuple:
+    return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size, st.st_ctime_ns)
+
+
 def _hash_regular_no_follow(path: Path) -> tuple[str, os.stat_result] | None:
     """sha256 of a page's raw bytes plus the stat the reload token is built
     from, both bound to ONE descriptor (§6.3: `page_rev` covers the bytes the
     parent loaded, so hash and token must describe the same file object, with
-    no path re-resolution between them). The stat is taken AFTER the read: a
-    mid-read rewrite bumps mtime past what we return, so the poller sees a
-    version change and re-binds rather than trusting a torn hash. None when
-    the name is (or became) anything but a regular non-symlink file (§2)."""
+    no path re-resolution between them). On a cache miss the closing stat is
+    taken AFTER the read: a mid-read rewrite bumps mtime past what we return,
+    so the poller sees a version change and re-binds rather than trusting a
+    torn hash; the digest is cached only when the identity stayed stable
+    across the read. None when the name is (or became) anything but a regular
+    non-symlink file (§2)."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
     except OSError:
         return None
     try:
-        if not stat_module.S_ISREG(os.fstat(fd).st_mode):
+        st = os.fstat(fd)
+        if not stat_module.S_ISREG(st.st_mode):
             return None
+        cache_key = str(path)
+        cached = _PAGE_DIGEST_CACHE.get(cache_key)
+        if cached is not None and cached[0] == _digest_key(st):
+            return cached[1], st
         digest = hashlib.sha256()
         with os.fdopen(fd, "rb") as fh:
             fd = -1
             for chunk in iter(lambda: fh.read(1 << 16), b""):
                 digest.update(chunk)
-            return digest.hexdigest(), os.fstat(fh.fileno())
+            st_after = os.fstat(fh.fileno())
+        if _digest_key(st_after) == _digest_key(st):
+            if len(_PAGE_DIGEST_CACHE) >= _PAGE_DIGEST_CACHE_MAX:
+                _PAGE_DIGEST_CACHE.clear()
+            _PAGE_DIGEST_CACHE[cache_key] = (_digest_key(st_after), digest.hexdigest())
+        return digest.hexdigest(), st_after
     except OSError:
         return None
     finally:
@@ -362,6 +389,7 @@ def _file_info(
     # Computed on request only (the metadata poll), not for every page listing.
     stat = None
     bridge_page = None
+    digest = None
     if exists and bridge_identity and read.bridge_eligible and lesson.get("uid"):
         page_id = next((p["id"] for p in read.pages if p["path"] == entry), None)
         hashed = _hash_regular_no_follow(path) if page_id else None
@@ -391,9 +419,17 @@ def _file_info(
         # The reload token folds the effective profile in (drain C1): a
         # manifest-only profile flip must reload the open page so the
         # displayed document was actually served under the CSP the metadata
-        # now advertises — D2 grants the bridge against this binding.
+        # now advertises — D2 grants the bridge against this binding. For a
+        # bridge-carrying page the token is additionally content-bound
+        # (drain D2 L2): an mtime-preserving byte replacement still moves it,
+        # so the client's version-equality check tracks the bytes, not a
+        # restorable timestamp. (A swap-and-restore BETWEEN two polls remains
+        # invisible in the token — inherent TOCTOU; the next poll's digest
+        # self-heals, and D4's server-side page_rev check stays the
+        # authoritative stale-attempt handler.)
         "version": (
-            f"{stat.st_mtime_ns}:{read.effective_profile}"
+            (f"{stat.st_mtime_ns}:{read.effective_profile}"
+             + (f":{digest[:16]}" if digest else ""))
             if stat else f"missing:{_manifest_version(lesson)}"
         ),
         "size": stat.st_size if stat else 0,
@@ -523,7 +559,11 @@ def bundle_info(lesson: dict, entry: str | None = None) -> dict:
     # the entry's own §2/§9.2 checks. Both a stale selection's invalid-entry
     # finding and a symlinked current page's degradation stay visible at the
     # top of the agent-facing bundle, not only in the nested file info.
-    file = _file_info(lesson, read, current)
+    # The current entry takes the identity path so the version token the
+    # Learn page renders (data-version) is the same content-bound token the
+    # metadata poll will answer with — otherwise every bridge page would
+    # "mismatch" on its first poll. The per-page listing below stays cheap.
+    file = _file_info(lesson, read, current, bridge_identity=True)
     info = {
         **base,
         "outcome": file["outcome"],

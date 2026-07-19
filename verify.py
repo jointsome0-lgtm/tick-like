@@ -997,6 +997,30 @@ with TestClient(app) as c:
           _d2_meta_ed["version"] != _d2_meta["version"]
           and _d2_meta_ed["bridge_page"]["page_rev"] == "sha256:" + hashlib.sha256(
               b"<html>Vera Example index edited</html>").hexdigest())
+    # drain D2 L2: a byte replacement that RESTORES the old mtime must still
+    # move the token — for bridge pages it is content-bound (digest folded
+    # in), so the client's version-equality check tracks bytes, not a
+    # restorable timestamp
+    _d2_st = (_v2_dir / "index.html").stat()
+    (_v2_dir / "index.html").write_bytes(b"<html>Vera Example mtime-preserved swap</html>")
+    _os.utime(_v2_dir / "index.html", ns=(_d2_st.st_atime_ns, _d2_st.st_mtime_ns))
+    _d2_meta_swp = c.get(
+        f"/learn/lessons/{_v2_id}/preview-meta",
+        params={"entry": "index.html"}).json()
+    (_v2_dir / "index.html").write_bytes(_d2_orig)  # restore
+    check("mtime-preserving byte swap still moves the reload token",
+          _d2_meta_swp["version"] != _d2_meta["version"]
+          and _d2_meta_swp["version"].startswith(f"{_d2_st.st_mtime_ns}:")
+          and _d2_meta_swp["bridge_page"]["page_rev"] == "sha256:" + hashlib.sha256(
+              b"<html>Vera Example mtime-preserved swap</html>").hexdigest())
+    # the Learn page's data-version must be the same content-bound token the
+    # poll answers with, or every bridge page would reload on its first poll
+    _d2_meta_now = c.get(
+        f"/learn/lessons/{_v2_id}/preview-meta",
+        params={"entry": "related/01-stage.html"}).json()
+    check("rendered data-version equals the poll's content-bound token",
+          f'data-version="{_d2_meta_now["version"]}"' in c.get(
+              f"/learn?lesson={_v2_id}").text)
     # a stale selection falls back to a DECLARED page (§4.2), so the identity
     # in the metadata describes the fallback actually rendered, never the
     # requested ghost
