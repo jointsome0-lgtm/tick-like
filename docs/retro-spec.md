@@ -57,9 +57,17 @@ Confidence: `low`, `medium`, `high`, `unknown`.
 
 Shared rules ported with the grammar: out-of-range anchors (month 13, week 99)
 are input errors, not crashes; naive local times that are DST-ambiguous or
-nonexistent are refused ("add an explicit offset"); text is non-empty, ≤ 1 MB
-UTF-8, no C0 controls except tab/newline/CR; `project` is optional and a
-whitespace-only value is stored as NULL.
+nonexistent are refused ("add an explicit offset"); range endpoints are parsed
+verbatim (a space around `/` fails, exactly as in exp2res — only the outer
+period string is trimmed before storing); text is non-empty, ≤ 1 MB UTF-8, no
+C0 controls except tab/newline/CR and no C1 controls (U+007F–U+009F) — the
+same hygiene applies to `project`, which is otherwise optional
+(whitespace-only → NULL).
+
+Timezone for derived bounds: `APP_TIMEZONE` if set, else the IANA zone
+`/etc/localtime` resolves to, else (last resort) the host's current fixed
+offset — set `APP_TIMEZONE` for correct cross-DST anchors and ambiguity
+detection.
 
 **No precision inflation** (exp2res §16.7) is not machine-checkable at capture;
 the form copy steers the owner: fuzzy memory → `approximate_range` with
@@ -84,7 +92,9 @@ entry is an idempotent no-op and appends nothing.
 `?edit=<id>` pre-fills the form), `POST /retro`, `POST /retro/{id}/edit`,
 `POST /retro/{id}/archive`, `POST /retro/{id}/unarchive`. All writes follow the
 sec16.4 dual-mode contract (Mode A no-JS form + 303 PRG with flash; Mode B
-`x-partial: 1` → JSON, errors 422). Nav: rail + More sheet + command palette,
+`x-partial: 1` → JSON, errors 422). The browser page currently submits Mode A
+only (like Manage/Habits forms); Mode B is the verified server contract for
+scripts and future enhancement. Nav: rail + More sheet + command palette,
 `R == 'retro'`. The precision dropdown's option labels double as period-format
 hints so the form explains itself without JS.
 

@@ -1907,12 +1907,20 @@ with TestClient(app) as c:
                                     "precision": "date_range", "confidence": "high", "text": "x"})
     retro_reject("range without '/'", {"period": "2026-05-01", "precision": "date_range",
                                        "confidence": "high", "text": "x"})
+    retro_reject("space around range separator (exp2res parses endpoints verbatim)",
+                 {"period": "2026-05-01/ 2026-06-15", "precision": "date_range",
+                  "confidence": "high", "text": "x"})
     retro_reject("unknown precision with a typed period",
                  {"period": "2026-05", "precision": "unknown", "confidence": "low", "text": "x"})
     retro_reject("empty text", {"period": "2026-05", "precision": "month",
                                 "confidence": "medium", "text": "   "})
     retro_reject("control chars in text", {"period": "2026-05", "precision": "month",
                                            "confidence": "medium", "text": "a\x00b"})
+    retro_reject("C1 control in text", {"period": "2026-05", "precision": "month",
+                                        "confidence": "medium", "text": "a\x85b"})
+    retro_reject("control char in project", {"period": "2026-05", "precision": "month",
+                                             "confidence": "medium", "project": "a\x85b",
+                                             "text": "x"})
     retro_reject("bogus precision", {"period": "2026-05", "precision": "sometime",
                                      "confidence": "medium", "text": "x"})
     retro_reject("bogus confidence", {"period": "2026-05", "precision": "month",
@@ -1928,15 +1936,27 @@ with TestClient(app) as c:
           row_b2["uuid"] == row_b["uuid"] and row_b2["period_raw"] == "2026-05"
           and row_b2["precision"] == "month" and row_b2["updated_at"] is not None)
     upd = events_of("retro_entry_updated")
-    check("retro_entry_updated snapshot carries the same retro_uuid",
-          len(upd) >= 1
-          and _json.loads(upd[-1]["payload_json"])["retro_uuid"] == row_b["uuid"])
+    upd_payload = _json.loads(upd[-1]["payload_json"]) if upd else {}
+    check("retro_entry_updated payload is the complete post-write row",
+          len(upd) >= 1 and upd_payload == {
+              "retro_uuid": row_b2["uuid"], "retro_id": rid_b,
+              "period_raw": row_b2["period_raw"], "precision": row_b2["precision"],
+              "confidence": row_b2["confidence"],
+              "period_start": row_b2["period_start"], "period_end": row_b2["period_end"],
+              "project": row_b2["project"], "text": row_b2["text"],
+              "created_at": row_b2["created_at"], "updated_at": row_b2["updated_at"],
+              "archived_at": row_b2["archived_at"],
+          }, str(upd_payload))
 
     r = c.post(f"/retro/{rid_b}/archive", follow_redirects=False)
     check("archive -> 303", r.status_code == 303, str(r.status_code))
-    check("archive sets archived_at + appends event",
-          retro_row(rid_b)["archived_at"] is not None
-          and len(events_of("retro_entry_archived")) == 1)
+    arch = events_of("retro_entry_archived")
+    check("archive sets archived_at + appends snapshot with archived_at",
+          retro_row(rid_b)["archived_at"] is not None and len(arch) == 1
+          and _json.loads(arch[-1]["payload_json"])["archived_at"] is not None)
+    r = c.post(f"/retro/{rid_b}/archive", follow_redirects=False)
+    check("second archive is an idempotent no-op (no duplicate event)",
+          r.status_code == 303 and len(events_of("retro_entry_archived")) == 1)
     r = c.get("/retro")
     check("GET /retro 200, active list hides archived entry",
           r.status_code == 200 and "Refined memory" not in r.text
