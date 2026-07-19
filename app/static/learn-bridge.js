@@ -119,6 +119,15 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         navPending = true;
         frame.src = expectedSrc;
     };
+    const identityMatches = (meta) => {
+        if (armed === null)
+            return true; // nothing bound, nothing to drift
+        if (meta.bridge !== true || !isBridgePage(meta.bridge_page))
+            return false;
+        return meta.bridge_page.lesson_uid === armed.lesson_uid
+            && meta.bridge_page.page_id === armed.page_id
+            && meta.bridge_page.page_rev === armed.page_rev;
+    };
     const isBridgePage = (value) => {
         if (typeof value !== "object" || value === null)
             return false;
@@ -129,7 +138,12 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
         });
     };
     const armFromMeta = (meta) => {
-        if (armed !== null || granted)
+        /* Single choke point (PR-55 round 3): never arm while a navigation is
+         * pending — the outgoing document can still announce into the gap and
+         * would be granted the INCOMING page's identity. Consequence: grants
+         * only ever go to settled documents (a pre-load announce is answered
+         * via the child's retries right after its load-driven bind). */
+        if (navPending || armed !== null || granted)
             return;
         if (meta.bridge === true && isBridgePage(meta.bridge_page)) {
             armed = {
@@ -157,14 +171,10 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
     };
     frame.addEventListener("load", () => {
         generation += 1;
-        if (navPending && granted) {
-            /* Gen-0 rescue path: the grant already went to this same pending
-             * navigation's document (its script announced before its own load
-             * event completed) — completing the load must not tear it down and
-             * hand the SAME document a second welcome. */
-            navPending = false;
-            return;
-        }
+        /* armFromMeta refuses to arm while navPending, so a grant can never
+         * exist when a pending navigation completes — no keep-the-grant branch
+         * is needed here (one welcome per document holds because a settled
+         * document's generation only changes with a real navigation). */
         teardown();
         if (!navPending) {
             /* Self-navigation: the lesson document went somewhere on its own. The
@@ -295,12 +305,11 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             return;
         if (armed === null) {
             pendingReady = ev.data; // answered when (and if) identity arms
-            if (generation === 0) {
-                /* No load event has been observed, yet the frame's document is
-                 * demonstrably running (it just announced): the document finished
-                 * loading before this module initialised, so no load-driven bind is
-                 * coming — bind here. Children re-announce until answered (ABI §2),
-                 * so the flush-or-retry pair completes the handshake. */
+            if (generation === 0 && !navPending) {
+                /* Settled document (the inline observer saw its load) with no
+                 * load-driven bind ever coming — the module initialised after the
+                 * initial load. Bind here; never during a pending navigation (the
+                 * announcement could be the outgoing document's, PR-55 round 3). */
                 void bind(generation);
             }
             return;
@@ -320,12 +329,20 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
                     navigate(meta);
                 }
                 else if (!navPending) {
-                    /* Same version, settled document: if the load-driven bind lost its
-                     * best-effort meta fetch, this is the retry that arms an eligible
-                     * document (PR-55 round 1). Never during a pending navigation —
-                     * the outgoing document could still announce into the gap and be
-                     * granted the incoming page's identity. */
-                    armFromMeta(meta);
+                    if (armed !== null && !identityMatches(meta)) {
+                        /* Identity drift without a byte/profile change (PR-55 round 3):
+                         * a manifest-only edit — a corrected pages[].id, a revoked
+                         * grant — moves bridge_page but not the file's reload token.
+                         * The armed (possibly granted) identity no longer describes
+                         * this page: reload, so the next document binds fresh. */
+                        navigate(meta);
+                    }
+                    else {
+                        /* Same version, settled document: if the load-driven bind lost
+                         * its best-effort meta fetch, this is the retry that arms an
+                         * eligible document (PR-55 round 1). */
+                        armFromMeta(meta);
+                    }
                 }
             }
         }

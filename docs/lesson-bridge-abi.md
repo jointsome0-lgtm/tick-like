@@ -126,9 +126,12 @@ that is the forward-compatibility room minor additions use.
   identity — `page_rev` may have changed.
 - **Stale revision:** the parent polls the preview metadata (~1.2 s); a
   version-token change closes the port and reloads the frame with the
-  server's current sandbox tokens applied first. A grant can therefore
-  outlive its file's bytes by at most one poll interval; D4's server-side
-  `page_rev` check is the authoritative stale-attempt handler (§6.4).
+  server's current sandbox tokens applied first. Identity drift without a
+  token change (a manifest-only edit moving `bridge_page` — corrected page
+  id, revoked eligibility — while the file bytes and profile stay put)
+  triggers the same reload. A grant can therefore outlive its identity by
+  at most one poll interval; D4's server-side `page_rev` check is the
+  authoritative stale-attempt handler (§6.4).
 - **Self-navigation:** a load event the parent did not initiate is never
   bound or granted; the parent re-asserts the expected page (bounded — a
   document that fights the re-assert simply stays unbridged). This is the
