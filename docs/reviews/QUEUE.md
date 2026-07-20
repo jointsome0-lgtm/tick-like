@@ -19,7 +19,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-20 — e57d6bd, 7630977 —
+(none)
+
+## Done
+
+- [x] 2026-07-20 — e57d6bd, 7630977 —
   `app/static/src/learn-bridge.ts` + emitted `app/static/learn-bridge.js`
   (new), `app/static/app.js`, `app/templates/learn.html`, `app/main.py`,
   `app/services/lessons.py`, `docs/lesson-bridge-abi.md` (new),
@@ -39,11 +43,32 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   Follow-ups on the same surface: 8cfcb9d (poll re-arms an unarmed settled
   document), b74fd0e (inline early-load observer anchors navPending),
   4315bab (arm only settled documents; reload on manifest-only identity
-  drift), and the round-4 commit (content-bound version token for bridge
+  drift), 1565bd4 (round 4: content-bound version token for bridge
   pages + inode-keyed digest cache; announcements answered on live receipt
-  only, buffer removed).
-
-## Done
+  only, buffer removed), edf0f8b (round 5: exhausting the re-assert budget
+  sets a terminal quarantine checked before arming; only a parent-owned
+  navigation clears it), 4fdc572 (drain R1 fix: more than one load observed
+  before runtime init means the settled document is never armed — the
+  runtime re-asserts the expected src instead; commit also carries the
+  drain addendum covering through 1565bd4), 927e8b1 (round 6: a
+  rescueBinding latch admits one in-flight late-initialisation rescue
+  bind; the poll remains the retry mechanism), 9dd4111 (round 7,
+  docs-only: the ABI records the armed-window successor-ready residual
+  next to the pre-own-load and in-flight-delivery residuals). PR #55
+  merged 2026-07-20 via merge commit 0565f66; the merged tree is
+  identical to branch head 9dd4111. Drained →
+  `2026-07-20-lesson-bridge-runtime-review.md`: initial review at
+  7630977 (three Low, L1–L3); first addendum through 1565bd4 (L1–L3
+  partially resolved, one new Low regression R1); closing addendum over
+  1565bd4..9dd4111 plus merge check (R1 resolved by 4fdc572, edf0f8b
+  fail-closed quarantine confirmed, 927e8b1 rescue latch confirmed, no
+  new security-severity finding, L1–L3 remain Low; tsc emit re-verified
+  byte-identical independently). Closing verdict at merge head 0565f66:
+  YES for the current ping-only ABI-v1 direct-loopback deployment;
+  NO for D4/D5 capability extensions on this handshake until the L1
+  document-confusion residuals and L2 served-byte binding are resolved
+  (per-operation server-side re-validation mandatory); wider deployment
+  NO — v0 unauthenticated.
 
 - [x] 2026-07-20 — 66defd3, 2ce1c0e, 38ef45e, f7db9e1, 625bbb8 —
   `app/main.py`, `app/services/bundle_schema.py`, `app/services/lessons.py`,

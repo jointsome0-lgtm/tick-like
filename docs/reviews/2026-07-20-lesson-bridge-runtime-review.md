@@ -306,3 +306,140 @@ ping-only; (b) D4/D5 capability extensions: NO on this exact handshake until
 the L1/R1 document-confusion paths and L2 served-byte binding are resolved and
 browser-tested, with per-operation server-side authority/revision validation
 mandatory.**
+
+## ADDENDUM — closing fixes `edf0f8b`, `4fdc572`, `927e8b1`, `9dd4111`
+
+**Scope:** re-review of the exact requested range `1565bd4..9dd4111`, followed
+by a closing check at merge head `0565f66`. The merge tree is byte-identical to
+`9dd4111`. The three runtime changes, the docs-only residual update, the full
+resulting parent runtime and ABI, and the earlier findings above were checked.
+All `file:line` references in this addendum name the tree at `0565f66`.
+
+**Result:** no new Critical, High, Medium, or Low finding in this range. R1 is
+resolved. The previously reported L1 document-generation residuals, L2
+served-byte race, and reduced L3 cold-hash availability residual remain Low
+under the current ping-only, direct-loopback posture.
+
+### R1 / `4fdc572` — resolved
+
+The fix distinguishes the one legitimate pre-module load from the unsafe
+multi-load state instead of reducing every positive count to the same settled
+state. When the inline observer has counted more than one load, the runtime
+sets `navPending`, consumes one re-assert slot, and assigns a cache-busted copy
+of the parent-owned expected URL before any arming path can run
+(`app/static/src/learn-bridge.ts:82-103`). `armFromMeta()` refuses to arm while
+that navigation is pending, and the load handler clears the pending state only
+when the forced expected document completes, then binds against that new
+generation (`app/static/src/learn-bridge.ts:178-208`, `210-235`). The settled
+successor from the pre-module two-load sequence can therefore no longer enter
+the rescue or poll arming paths.
+
+An invented delayed-module browser probe reproduced the earlier sequence. The
+observer reached three loads (expected, successor, forced expected); the only
+welcome went to the forced expected page with its expected page id. The
+successor received neither welcome nor port. **`4fdc572` resolves R1.** It does
+not and does not claim to solve the separate browser blind windows that remain
+under L1.
+
+### `edf0f8b` — budget exhaustion now fails closed
+
+This fix closes the post-budget re-arm path. Every load first tears down the
+port and identity; after the third forced return has been resisted, the next
+self-navigation load sets `quarantined` instead of leaving an unarmed,
+apparently settled frame for the poll to arm
+(`app/static/src/learn-bridge.ts:210-232`). The single arming choke point checks
+quarantine before navigation or identity state, while `navigate()` is the only
+in-runtime path that clears the latch
+(`app/static/src/learn-bridge.ts:145-159`, `178-197`). A focused
+browser probe drove four expected-page grants followed by four settled
+successors: the first three successors were forced back, the fourth remained
+visible and received no grant, including across later polls.
+
+The new behavior is deliberately sticky denial, not recovery: further child
+loads and same-version polls leave the frame unbridged. In particular,
+quarantine has already cleared `armed`, so the poll's identity-only reload
+branch cannot fire; effective recovery is a fresh parent page/runtime or a
+metadata version change that calls `navigate()`
+(`app/static/src/learn-bridge.ts:112-119`, `371-400`). That availability cost
+is fail-closed and is not a new security finding. A parent-owned navigation
+also tears down first, marks its load pending, and only then clears quarantine,
+so it does not reopen the outgoing-document grant gap
+(`app/static/src/learn-bridge.ts:145-159`).
+
+### `927e8b1` — concurrent rescue fan-out is fixed; retry semantics stay bounded by state
+
+The late-initialisation rescue remains limited to the one state that needs it:
+generation zero, a settled initial document, and no armed identity. The new
+`rescueBinding` latch is set before `bind()` and cleared in `finally`, so ready
+retries cannot create overlapping rescue fetches while the first is pending
+(`app/static/src/learn-bridge.ts:339-367`). The triggering announcement is
+still dropped rather than buffered; after a successful bind, a later live
+child retry receives the grant, preserving the document-confusion fix at
+`app/static/src/learn-bridge.ts:192-197`.
+
+The latch is intentionally not a global request lock or rate limiter. The poll
+has its own `inFlight` guard, so one rescue fetch and one poll fetch may coexist;
+while a document remains unarmed, a continuously posting child can also start
+another serialized rescue after the preceding one settles
+(`app/static/src/learn-bridge.ts:358-363`, `371-400`). An invented fast-poster
+probe with delayed metadata responses observed six serialized rescue requests
+and a maximum rescue concurrency of one. This is a material reduction from
+fan-out, uses only the fixed preview-metadata URL, and adds no authority; it is
+not a security-severity finding under the current direct-loopback posture. A
+future wider/authenticated deployment should share or cool down this work if
+it needs a stronger untrusted-content request-rate guarantee.
+
+### Remaining findings and `9dd4111`
+
+- **L1 remains Low, with R1 removed from it.** The documented pre-own-load
+  ambiguity, the now-explicit armed-window successor-ready case, and in-flight
+  delivery all arise from the navigation-stable `WindowProxy`; the browser
+  supplies no document-generation token. The new ABI text accurately states
+  that a successor can post a live `ready` before its own load tears down the
+  armed identity, and that a stalled load can retain the ping-only port
+  (`docs/lesson-bridge-abi.md:137-175`). `9dd4111` changes documentation only;
+  it neither fixes nor worsens that residual. Capability-bearing work must not
+  treat port possession as authority and remains subject to the closing gate
+  below.
+- **L2 remains Low and unchanged.** Metadata binds digest and token to one
+  descriptor, but the normal file response still resolves metadata and then
+  lets `FileResponse` open the path separately; the placeholder path likewise
+  hashes and later re-opens by path (`app/services/lessons.py:211-243`,
+  `1142-1148`; `app/main.py:1215-1235`). No commit in this range binds the
+  granted revision to the exact served bytes.
+- **L3 remains Low and unchanged.** Stable files use the inode/ctime-aware
+  digest cache, but a cold or invalidated entry still hashes the entire file,
+  and reaching 64 entries clears the whole cache
+  (`app/services/lessons.py:196-243`). The range adds no new hashing or polling
+  path beyond the bounded rescue behavior assessed above.
+- ABI v1 still grants `capabilities: []` and implements only ping/pong
+  (`app/static/src/learn-bridge.ts:24-25`, `281-300`, `320-336`). None of the
+  scoped commits changes the iframe sandbox/CSP owner, metadata eligibility,
+  bundle allowlist, listener, authentication, or loopback deployment posture.
+
+### Verification
+
+- `git diff --check 1565bd4..9dd4111` — passed.
+- `git diff --exit-code 9dd4111 0565f66` — passed; the merge tree is identical
+  to the reviewed branch head.
+- Fresh strict TypeScript compilation to a scratch directory — passed; the
+  emitted `learn-bridge.js` was byte-identical to the committed served file.
+- Invented headless-Chrome delayed-module probe — R1 resolved: only the forced
+  expected document received a welcome and port after the two-load startup
+  sequence.
+- Invented headless-Chrome re-assert probe — terminal quarantine held after
+  the fourth settled successor; no successor received a post-load grant.
+- Invented headless-Chrome fast-ready probe — six rescue metadata requests
+  completed serially with maximum rescue concurrency one.
+
+**Closing verdict — merge head `0565f66`: (a) current ABI-v1 direct-loopback
+deployment: YES, with L1–L3 as Low follow-ups; R1 is resolved and the closing
+range introduces no new security-severity finding; (b) D4/D5 capability
+extensions: NO on this exact handshake until the remaining L1 document-
+confusion paths and L2 served-byte binding are resolved and browser-tested,
+with per-operation server-side authority/revision validation mandatory; (c)
+wider deployment: NO — v0 remains unauthenticated.**
+
+Per the caller's explicit one-file constraint, this addendum does not move the
+queue entry. It therefore remains Pending as an administrative restart gate
+until that separate file is updated.
