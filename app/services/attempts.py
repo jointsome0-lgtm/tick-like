@@ -391,16 +391,21 @@ def record_attempt(conn: sqlite3.Connection, lesson: dict, payload: dict) -> dic
     Refusals raise AttemptError with a distinct code per
     docs/lesson-attempts-api.md."""
     submission = _clean_submission(payload)
-    _check_rate(lesson["id"])
 
-    # §6.3 replay precedes every record-time refusal (PR-57 round 1): the
-    # original write is already durable, so a client retry must learn its
-    # attempt_id even when the manifest has since rejected the bundle or
-    # retired the question — validation below governs only NEW writes.
+    # §6.3 replay precedes every record-time refusal — the rate limit
+    # included (PR-57 rounds 1 & 9): the original write is already durable,
+    # so a client retry must learn its attempt_id even when the manifest has
+    # since rejected the bundle, retired the question, or the retry lands
+    # with the window exhausted — validation below governs only NEW writes.
+    # Replays and key conflicts consume no budget; the unmetered work is one
+    # indexed SELECT, far cheaper than the manifest/hash path the rate
+    # limit exists to protect.
     with _bundle_lock(lesson["slug"]):
         replay = _replay_or_conflict(conn, lesson, submission)
     if replay is not None:
         return replay
+
+    _check_rate(lesson["id"])
 
     try:
         read = lessons.read_bundle(lesson)

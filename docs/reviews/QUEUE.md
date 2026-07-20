@@ -20,8 +20,8 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 ## Pending
 
 - [ ] 2026-07-20 — c2bf554, 4e7997f, 142ea74, 6be555e, 9da7758, 89b4bc2,
-  ac08a7c, 9a34e33 + the PR-bot round-8 commit (which carries this entry
-  update) — `app/db.py`, `app/services/attempts.py` (new),
+  ac08a7c, 9a34e33, e0e9697 + the PR-bot round-9 commit (which carries
+  this entry update) — `app/db.py`, `app/services/attempts.py` (new),
   `app/services/bundle_schema.py` (round 8 only),
   `app/services/lessons.py`, `app/main.py`, `docs/lesson-attempts-api.md`
   (new), `verify.py` —
@@ -61,7 +61,10 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   grammar regexes in bundle_schema.py and attempts.py are \Z-anchored —
   Python's $ under .match() accepted a trailing newline, letting
   "pg_x\n"-style page/rev identities into the row and projection (and
-  into manifest id validation); verify 573.
+  into manifest id validation); verify 573. Round 9: the idempotency
+  replay lookup also precedes the rate limit — a retry of the
+  window-exhausting attempt returns its duplicate, not a 429; replays
+  and key conflicts consume no window budget; verify 574.
 
 ## Done
 

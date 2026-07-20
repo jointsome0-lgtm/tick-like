@@ -1563,14 +1563,20 @@ with TestClient(app) as c:
           and _at_race["attempt_id"] == _at_row1["attempt_id"]
           and _at_roc_calls["n"] == 2)
 
-    # rate limit: sliding per-lesson window, distinct code + Retry-After
+    # rate limit: sliding per-lesson window, distinct code + Retry-After;
+    # fresh keys spend budget, replays never do (PR-57 round 9) — a retry of
+    # the window-exhausting attempt learns its attempt_id, not a 429
     attempts_svc._reset_rate_limit()
     _at_rate_saved = attempts_svc.RATE_MAX_PER_WINDOW
     attempts_svc.RATE_MAX_PER_WINDOW = 3
     try:
-        for _ in range(3):
-            _at_rl_ok = c.post(_at_url, json=_at_body)  # duplicates spend budget
-        _at_rl_hit = c.post(_at_url, json=_at_body)
+        for _rl_i in range(3):
+            _at_rl_ok = c.post(_at_url, json=dict(
+                _at_body, idempotency_key=f"vera-rl-{_rl_i}"))
+        _at_rl_hit = c.post(_at_url, json=dict(
+            _at_body, idempotency_key="vera-rl-fresh"))
+        _at_rl_replay = c.post(_at_url, json=dict(
+            _at_body, idempotency_key="vera-rl-2"))
     finally:
         attempts_svc.RATE_MAX_PER_WINDOW = _at_rate_saved
         attempts_svc._reset_rate_limit()
@@ -1578,6 +1584,9 @@ with TestClient(app) as c:
           _at_rl_ok.status_code == 200 and _at_rl_hit.status_code == 429
           and _at_rl_hit.json()["error"] == "rate-limited"
           and _at_rl_hit.headers.get("retry-after") is not None)
+    check("replay bypasses an exhausted window: duplicate, not 429",
+          _at_rl_replay.status_code == 200
+          and _at_rl_replay.json()["result"] == "duplicate")
 
     # §2 symlink policy: a page that resolves through a symlink is missing
     _symp_conn = get_conn()
