@@ -93,7 +93,7 @@ is refused with 403 before the handler runs. Requests must be
 | 409 | `idempotency-conflict` | known key, different question/page (§6.3) |
 | 411 / 413 / 415 | `length-required` / `payload-too-large` / `unsupported-media-type` | body admission |
 | 422 | `unknown-question` | `question_id` not declared in the record-time manifest (§4.3/§6.4) — the mandated distinct response |
-| 429 | `rate-limited` | > 20 attempts per lesson per 60 s window (`Retry-After` set) |
+| 429 | `rate-limited` | > 20 attempts per lesson per 60 s window (`Retry-After` set). The sliding window lives in server-process memory: the deployment model is one worker process (the loopback systemd unit), so the bound is per deployment in practice; during a rolling restart two processes can briefly hold separate windows (bounded 2× for the overlap). The limit is an abuse damper, not a security boundary — body caps, grammar/manifest validation, and the durable-write semantics never depend on it. Replays and key conflicts are not charged. |
 
 The D5 bridge attempt operation reuses these `error` codes verbatim as its
 port-level result codes (the slot reserved in lesson-bridge-abi.md §3).

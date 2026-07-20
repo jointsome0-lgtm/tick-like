@@ -20,8 +20,8 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 ## Pending
 
 - [ ] 2026-07-20 — c2bf554, 4e7997f, 142ea74, 6be555e, 9da7758, 89b4bc2,
-  ac08a7c, 9a34e33, e0e9697, 69af6fe, 906322d, 780c028 + the PR-bot
-  round-12 commit (which carries this entry update) — `app/db.py`, `app/services/attempts.py` (new),
+  ac08a7c, 9a34e33, e0e9697, 69af6fe, 906322d, 780c028, 89b4cd2 + the
+  PR-bot round-13 commit (which carries this entry update) — `app/db.py`, `app/services/attempts.py` (new),
   `app/services/bundle_schema.py` (round 8 only),
   `app/services/lessons.py`, `app/main.py`, `docs/lesson-attempts-api.md`
   (new), `verify.py` —
@@ -81,7 +81,10 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   outcome (they are not new writes; refusals of new writes stay
   charged), so retries racing a slow original cannot starve real
   attempts; the locked write section split into _record_locked;
-  verify 579.
+  verify 579. Round 13 (docs/comment only): the per-process in-memory
+  scope of the rate window is documented as the deployment contract
+  (one worker; brief 2x during rolling-restart overlap; abuse damper,
+  not a security boundary); no code change.
 
 ## Done
 

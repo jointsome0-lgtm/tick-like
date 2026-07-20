@@ -49,8 +49,12 @@ MAX_KEY_LEN = 128              # §6.3: opaque client token ≤ 128 chars
 PAGE_REV_RE = re.compile(r"^sha256:[0-9a-f]{64}\Z")
 
 # Rate limit (D4 endpoint semantics): attempts are human-scale Check presses.
-# Sliding window per lesson; every recording call consumes budget, valid or
-# not, so a misbehaving page cannot grind the manifest/hash path either.
+# Sliding window per lesson; a recording call consumes budget whether it
+# records or refuses (so a misbehaving page cannot grind the manifest/hash
+# path), except replay/conflict outcomes, which refund theirs (round 12).
+# The window is in-process memory by design: the deployment model is ONE
+# worker (loopback systemd unit) — an abuse damper, not a security boundary
+# (docs/lesson-attempts-api.md documents the per-process scope).
 RATE_WINDOW_SECONDS = 60.0
 RATE_MAX_PER_WINDOW = 20
 
