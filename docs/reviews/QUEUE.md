@@ -19,7 +19,23 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-(none)
+- [ ] 2026-07-20 — c2bf554 — `app/db.py`, `app/services/attempts.py` (new),
+  `app/services/lessons.py`, `app/main.py`, `docs/lesson-attempts-api.md`
+  (new), `verify.py` —
+  issue #36 session D4: new write endpoint `POST
+  /learn/lessons/{id}/attempts` (+ `by-slug` alias) recording learner
+  attempts. Schema v12 adds the `lesson_attempts` table; each row is
+  written in one transaction with a `lesson_attempt` ledger event. The
+  handler validates submissions against the record-time bundle manifest
+  (declared questions only; eligibility from the manifest read; staleness
+  derived server-side from the current page binding and bytes), applies
+  idempotency keys unique per lesson, per-lesson rate limiting, and body
+  size caps, and synchronously appends a projection line to the bundle's
+  `attempts.jsonl` (per-bundle lock; falls back to a full rebuild from
+  SQLite). lessons.py gains two public read helpers (`read_bundle`,
+  `hash_bundle_page`); no bridge/client code changed. The endpoint is
+  behind the existing app-wide unsafe-method middleware. New contract doc
+  describes request/response codes. verify.py adds a D4 section (565).
 
 ## Done
 
