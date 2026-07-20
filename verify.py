@@ -1419,8 +1419,7 @@ with TestClient(app) as c:
             return _at_real_write(fd, data)
 
         with _mock.patch("os.write", side_effect=_at_short_write):
-            _at_short_ok = attempts_svc._project_attempt(
-                _at_conn, _at, attempts_svc._projection_line(_at_last))
+            _at_short_ok = attempts_svc._project_attempt(_at_conn, _at, _at_last)
     finally:
         _at_conn.close()
     _at_lines3 = _at_proj.read_text(encoding="utf-8").splitlines()
@@ -1428,6 +1427,55 @@ with TestClient(app) as c:
           _at_short_ok and _at_split["done"]
           and len(_at_lines3) == len(_at_rows())
           and json.loads(_at_lines3[-1])["attempt_id"] == _at_last["attempt_id"])
+
+    # §6.1 order guard (PR-57 round 2): a row that does not sort strictly
+    # after the projection tail is never blind-appended — the fast path
+    # detects the disorder and rebuilds in authority order instead
+    _at_conn = get_conn()
+    try:
+        attempts_svc.reconcile_projection(_at_conn, _at)
+        _at_keep2 = _at_proj.read_text(
+            encoding="utf-8").splitlines(keepends=True)[:-1]
+        _at_proj.write_text("".join(_at_keep2), encoding="utf-8")
+        _at_backdated = dict(_at_rows()[-1],
+                             created_at="2000-01-01T00:00:00+00:00")
+        _at_guard_ok = attempts_svc._project_attempt(_at_conn, _at, _at_backdated)
+    finally:
+        _at_conn.close()
+    _at_lines4 = _at_proj.read_text(encoding="utf-8").splitlines()
+    check("out-of-order append is caught: projection rebuilt in §6.1 order",
+          _at_guard_ok
+          and [json.loads(l)["attempt_id"] for l in _at_lines4]
+          == [r["attempt_id"] for r in _at_rows()]
+          and all(json.loads(l)["created_at"] != "2000-01-01T00:00:00+00:00"
+                  for l in _at_lines4))
+
+    # §6.3 replay wins over refusals even mid-race (PR-57 round 2): a retry
+    # whose original is still in flight sees the key uncommitted at the early
+    # check, then hits unknown-question after the question was retired — the
+    # refusal path re-checks and returns the committed duplicate
+    _at_real_roc = attempts_svc._replay_or_conflict
+    _at_roc_calls = {"n": 0}
+
+    def _at_roc_once(conn_, lesson_, sub_):
+        _at_roc_calls["n"] += 1
+        if _at_roc_calls["n"] == 1:
+            return None  # simulate: the original write has not committed yet
+        return _at_real_roc(conn_, lesson_, sub_)
+
+    bschema.write_manifest(_at_dir / "lesson.json", dict(_at_raw, questions=[]))
+    _at_conn = get_conn()
+    try:
+        with _mock.patch.object(attempts_svc, "_replay_or_conflict",
+                                _at_roc_once):
+            _at_race = attempts_svc.record_attempt(_at_conn, _at, dict(_at_body))
+    finally:
+        _at_conn.close()
+        bschema.write_manifest(_at_dir / "lesson.json", _at_raw)  # restore
+    check("racing retry beats a manifest refusal: committed duplicate wins",
+          _at_race["result"] == "duplicate"
+          and _at_race["attempt_id"] == _at_row1["attempt_id"]
+          and _at_roc_calls["n"] == 2)
 
     # rate limit: sliding per-lesson window, distinct code + Retry-After
     attempts_svc._reset_rate_limit()

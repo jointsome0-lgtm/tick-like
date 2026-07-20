@@ -108,8 +108,11 @@ def _check_rate(lesson_id: int) -> None:
 
 def _utc_now_iso() -> str:
     """§6.2: `created_at` is UTC ISO-8601 — the same string is stored in the
-    row and echoed by the projection, so authority and file never disagree."""
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    row and echoed by the projection, so authority and file never disagree.
+    Microsecond precision so same-second attempts still sort by time and the
+    projection fast path (append at EOF) almost always matches the §6.1
+    rebuild order; `_tail_precedes` guards the residual collisions."""
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 def _utf8_len(value: str) -> int | None:
@@ -237,21 +240,44 @@ def _projection_path(lesson: dict) -> Path:
     return lessons.LESSONS_DIR / lesson["slug"] / PROJECTION_NAME
 
 
-def _count_lines(fd: int, size: int) -> tuple[int, bool]:
-    """(newline count, ends-with-newline) via positional reads — the append
-    offset is untouched. A file with bytes past the last newline has a torn
-    tail (a crashed partial append) and is reported un-terminated."""
+def _count_lines(fd: int, size: int) -> tuple[int, bool, bytes]:
+    """(newline count, ends-with-newline, last complete line) via positional
+    reads — the append offset is untouched. A file with bytes past the last
+    newline has a torn tail (a crashed partial append) and is reported
+    un-terminated. The kept tail is capped at the §6.2 line bound; a foreign
+    over-long last line comes back truncated, fails to parse, and forces the
+    rebuild path — never a blind append."""
     lines = 0
     offset = 0
-    last = b""
+    tail = b""
     while offset < size:
         chunk = os.pread(fd, 1 << 16, offset)
         if not chunk:
             break
         lines += chunk.count(b"\n")
         offset += len(chunk)
-        last = chunk[-1:]
-    return lines, last == b"\n"
+        tail = (tail + chunk)[-(MAX_LINE_BYTES + 1):]
+    terminated = tail.endswith(b"\n")
+    last = tail[:-1].rpartition(b"\n")[2] if terminated else b""
+    return lines, terminated, last
+
+
+def _tail_precedes(last_line: bytes, row: dict) -> bool:
+    """§6.1 order guard (PR-57 round 2): the fast path may append only when
+    the projection's current tail sorts strictly before the new row by
+    (created_at, attempt_id) — a same-timestamp attempt whose uuid sorts
+    earlier, or a clock step backwards, would otherwise leave the file
+    disagreeing with the rebuild order while reporting `projected`."""
+    if not last_line:
+        return True
+    try:
+        prev = json.loads(last_line)
+        prev_key = (prev["created_at"], prev["attempt_id"])
+    except (ValueError, KeyError, TypeError):
+        return False
+    if not all(isinstance(part, str) for part in prev_key):
+        return False
+    return prev_key < (row["created_at"], row["attempt_id"])
 
 
 def _rebuild_projection(conn: sqlite3.Connection, lesson: dict) -> None:
@@ -280,14 +306,16 @@ def reconcile_projection(conn: sqlite3.Connection, lesson: dict) -> bool:
     return True
 
 
-def _project_attempt(conn: sqlite3.Connection, lesson: dict, line: str) -> bool:
+def _project_attempt(conn: sqlite3.Connection, lesson: dict, row: dict) -> bool:
     """Synchronous projection append, called under the bundle lock after the
     transaction committed. Fast path: O_APPEND + fsync of one line onto a
-    consistent file (line count == rows - 1, newline-terminated). Anything
-    else — torn tail, missing lines from an earlier failure or crash, a
-    planted symlink/FIFO at the name — falls back to the reconcile rebuild.
-    Returns False (projection pending) only when the filesystem refuses
-    both; the authoritative write is already durable either way."""
+    consistent file (line count == rows - 1, newline-terminated, tail sorts
+    before the new row). Anything else — torn tail, missing lines from an
+    earlier failure or crash, an out-of-order tail, a planted symlink/FIFO
+    at the name — falls back to the reconcile rebuild. Returns False
+    (projection pending) only when the filesystem refuses both; the
+    authoritative write is already durable either way."""
+    line = _projection_line(row)
     expected = conn.execute(
         "SELECT COUNT(*) FROM lesson_attempts WHERE lesson_id = ?",
         (lesson["id"],),
@@ -307,8 +335,12 @@ def _project_attempt(conn: sqlite3.Connection, lesson: dict, line: str) -> bool:
         try:
             st = os.fstat(fd)
             if stat_module.S_ISREG(st.st_mode):
-                lines, terminated = _count_lines(fd, st.st_size)
-                if (st.st_size == 0 or terminated) and lines == expected - 1:
+                lines, terminated, last = _count_lines(fd, st.st_size)
+                if (
+                    (st.st_size == 0 or terminated)
+                    and lines == expected - 1
+                    and _tail_precedes(last, row)
+                ):
                     # write(2) may land short (ENOSPC, rlimits): loop until
                     # the whole line is down — a partial append must never
                     # report `projected` (the rebuild below replaces the
@@ -381,21 +413,32 @@ def record_attempt(conn: sqlite3.Connection, lesson: dict, payload: dict) -> dic
     if replay is not None:
         return replay
 
-    read = lessons.read_bundle(lesson)
-    _require_eligible(read)
-    if not lesson.get("uid"):  # unreachable post-v11 backfill; fail closed
-        raise AttemptError("attempts-unavailable", 409, "lesson has no uid")
+    try:
+        read = lessons.read_bundle(lesson)
+        _require_eligible(read)
+        if not lesson.get("uid"):  # unreachable post-v11 backfill; fail closed
+            raise AttemptError("attempts-unavailable", 409, "lesson has no uid")
 
-    question = next(
-        (q for q in read.questions if q["id"] == submission["question_id"]), None
-    )
-    if question is None:
-        # §4.3/§6.4: identity that no longer exists (or never did) is the one
-        # thing that rejects — distinct from staleness, which records.
-        raise AttemptError(
-            "unknown-question", 422,
-            "question_id is not declared in the lesson manifest",
+        question = next(
+            (q for q in read.questions if q["id"] == submission["question_id"]), None
         )
+        if question is None:
+            # §4.3/§6.4: identity that no longer exists (or never did) is the
+            # one thing that rejects — distinct from staleness, which records.
+            raise AttemptError(
+                "unknown-question", 422,
+                "question_id is not declared in the lesson manifest",
+            )
+    except AttemptError:
+        # PR-57 round 2: a retry racing its own original request (timeout
+        # resend) can see the key uncommitted at the early check above, then
+        # hit a refusal here after the original committed. The durable
+        # outcome still wins (§6.3) — re-check before refusing.
+        with _bundle_lock(lesson["slug"]):
+            replay = _replay_or_conflict(conn, lesson, submission)
+        if replay is not None:
+            return replay
+        raise
     stale = _derive_stale(
         lesson, read, question, submission["page_id"], submission["page_rev"]
     )
@@ -473,7 +516,7 @@ def record_attempt(conn: sqlite3.Connection, lesson: dict, payload: dict) -> dic
                     (lesson["id"], submission["question_id"]),
                 ).fetchone()[0]
                 projected = _project_attempt(
-                    conn, lesson, _projection_line({**row, "event_uuid": event_uuid})
+                    conn, lesson, {**row, "event_uuid": event_uuid}
                 )
                 return {
                     "result": "recorded",
