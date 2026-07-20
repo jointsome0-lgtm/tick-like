@@ -781,6 +781,65 @@ font, image) is forbidden.
 - Prefer editing the one page for the current stage over growing
   index.html. The app's Learn preview live-reloads the open page when you
   save it and shows every manifest page as a tab.
+
+## Bridge conventions — wiring Check into pages
+
+Inside the Learn app, an interactive-profile page runs in a sandboxed
+iframe with a parent-owned lesson bridge: a postMessage handshake, then a
+transferred MessagePort. Pages that record answers follow these rules:
+
+- Persistence goes through bridge operations, nothing else. The sandbox
+  has no network and no forms — a Check button that fetches, posts a
+  form, or writes a file cannot work. Wire every Check /
+  "record my answer" action to the bridge port only.
+- Handshake: on load, post
+  `{"ephemeris": "lesson-bridge", "type": "ready", "abi": [1],
+  "want": ["attempts"]}` to `window.parent` with targetOrigin
+  `new URL(location.href).origin`; re-announce every 250–500 ms until a
+  `welcome` or `reject` arrives, and give up after ~2 s of silence. The
+  `welcome` transfers the port everything else flows over. Skip the
+  handshake entirely when `new URL(location.href).origin` is the string
+  `"null"` (the page was opened from disk, not served by the app) —
+  there is no app origin to talk to; stay read-only.
+- Authenticate what you receive. Accept a `welcome` or `reject` only
+  when `event.source === window.parent` AND `event.origin` equals
+  `new URL(location.href).origin` (the exact app origin the page was
+  served from), and the message carries `"ephemeris": "lesson-bridge"`
+  with the expected `type`. A `welcome` must additionally select an
+  `abi` you announced and transfer exactly one MessagePort; a `reject`
+  carries only `reason` and `supported` — it has no selected `abi` and
+  no port, so do not demand them of it. Accept at most one handshake
+  result per page load and ignore every later or non-matching message:
+  a message from any other window or origin, or a "welcome" claiming
+  capabilities without a port from the parent, is noise, never an
+  upgrade to write access.
+- Identity is the parent's. The `welcome` carries the lesson identity
+  (`lesson_uid`, `page_id`, `page_rev`) and the granted capability set;
+  the page never sends its own lesson/page identity — it has no say.
+- `question_id` comes from the manifest. A Check button records against
+  the exact declared `q_…` id from `questions[]` — never an id invented
+  at runtime, never one derived from the question text. If the question
+  is not declared in the manifest, declare it first: to the app an
+  undeclared question does not exist, so its attempts cannot land.
+- Port requests carry a page-chosen `request_id` (1–128 chars). Mint a
+  fresh opaque id, unique across the whole lesson, for every new logical
+  submission; reuse the same `request_id` only when retrying that exact
+  submission so it records once. A changed or re-entered answer is a new
+  submission and gets a new id — never a constant or question-derived
+  key, which would silently swallow later answers.
+- Degrade gracefully, always. Handshake silence, a `reject`, or a
+  granted capability set without `attempts` all mean "no persistence
+  here": the page stays fully usable read-only — predictions, reveals,
+  and experiments keep working, and Check shows a quiet
+  "not connected to the Learn app" state instead of erroring or hiding
+  content. The same page must hold up opened directly from disk, under
+  the legacy profile, or in any context without the bridge.
+- Today the granted capability set is empty (the attempts operation is
+  the app's next step, and its message shape is not frozen yet). Build
+  the scaffolding to these conventions anyway — handshake, capability
+  detection, declared ids, degradation — and never invent a write
+  operation: implement the recording call only against the app's frozen
+  attempt operation once the `attempts` capability is actually granted.
 """
 
 

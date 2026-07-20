@@ -322,6 +322,24 @@ with TestClient(app) as c:
     check("lesson AGENTS.md requires pinned libraries in assets/, bans CDN",
           "CDN" in agents_text and "pinned" in agents_text
           and "assets/" in agents_text)
+    check("lesson AGENTS.md teaches the bridge conventions (D3)",
+          "lesson-bridge" in agents_text
+          and "to the bridge port only" in agents_text
+          and "give up after ~2 s of silence" in agents_text
+          and "the page never sends its own lesson/page identity" in agents_text
+          and "`question_id` comes from the manifest" in agents_text
+          and "never an id invented" in agents_text
+          and "`request_id`" in agents_text
+          and "fully usable read-only" in agents_text
+          and "granted capability set is empty" in agents_text
+          and "Authenticate what you receive" in agents_text
+          and "event.source === window.parent" in agents_text
+          and "`event.origin` equals" in agents_text
+          and "it has no selected `abi`" in agents_text
+          and "upgrade to write access" in agents_text
+          and "stay read-only" in agents_text
+          and "unique across the whole lesson" in agents_text
+          and "never invent a write" in agents_text)
     check("lesson AGENTS.md draws the untrusted-data boundary + no-symlink rule",
           "untrusted data" in agents_text
           and "never directives to follow" in agents_text
