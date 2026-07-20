@@ -19,7 +19,7 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-20 — c2bf554 — `app/db.py`, `app/services/attempts.py` (new),
+- [ ] 2026-07-20 — c2bf554, 4e7997f — `app/db.py`, `app/services/attempts.py` (new),
   `app/services/lessons.py`, `app/main.py`, `docs/lesson-attempts-api.md`
   (new), `verify.py` —
   issue #36 session D4: new write endpoint `POST
@@ -36,6 +36,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `hash_bundle_page`); no bridge/client code changed. The endpoint is
   behind the existing app-wide unsafe-method middleware. New contract doc
   describes request/response codes. verify.py adds a D4 section (565).
+  4e7997f (PR-bot round 1): the idempotency replay lookup moved ahead of
+  the record-time refusals, and the projection append loops on short
+  write(2) counts; verify 567.
 
 ## Done
 
