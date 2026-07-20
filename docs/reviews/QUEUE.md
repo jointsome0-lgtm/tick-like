@@ -20,8 +20,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 ## Pending
 
 - [ ] 2026-07-20 — c2bf554, 4e7997f, 142ea74, 6be555e, 9da7758, 89b4bc2,
-  ac08a7c, 9a34e33, e0e9697, 69af6fe, 906322d, 780c028, 89b4cd2 + the
-  PR-bot round-13 commit (which carries this entry update) — `app/db.py`, `app/services/attempts.py` (new),
+  ac08a7c, 9a34e33, e0e9697, 69af6fe, 906322d, 780c028, 89b4cd2, 0edef9e —
+  the entry stays current with the branch: any further branch commit, and
+  the merge commit itself once the PR lands (this repository merges via
+  merge commits, so the landed tree is the reviewed branch head's tree),
+  is appended here before any drain or restart — `app/db.py`, `app/services/attempts.py` (new),
   `app/services/bundle_schema.py` (round 8 only),
   `app/services/lessons.py`, `app/main.py`, `docs/lesson-attempts-api.md`
   (new), `verify.py` —
@@ -84,7 +87,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   verify 579. Round 13 (docs/comment only): the per-process in-memory
   scope of the rate window is documented as the deployment contract
   (one worker; brief 2x during rolling-restart overlap; abuse damper,
-  not a security boundary); no code change.
+  not a security boundary); no code change. Round 14 (docs-only): the
+  commit list drops the self-referential round-commit placeholder for
+  the standing append-before-drain/restart rule.
 
 ## Done
 
