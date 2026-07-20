@@ -108,8 +108,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   is the server half of that requirement); wider deployment NO
   (unauthenticated). PR #57: rounds 1–13 fixed on their threads;
   rounds 14–16 (phantom test-merge hashes) rebutted, review loop
-  closed without a bot verdict. The merge commit is appended here at
-  merge time, before any restart, per the standing rule above.
+  closed without a bot verdict. LANDED 2026-07-20 via merge commit
+  12ae229 at branch head de2ed93 — the landed tree is byte-identical
+  to the reviewed branch head's tree (verified: both trees 0c64b04).
 
 - [x] 2026-07-20 — 6e7b7b5, 8c82f1b, 841c37c — `app/services/lessons.py`,
   `verify.py` —
