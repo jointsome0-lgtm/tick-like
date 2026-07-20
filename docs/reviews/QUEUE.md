@@ -97,7 +97,7 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   `2026-07-20-attempt-backend-review.md` (Codex, standing brief by
   file reference, at head 83cc652): no Critical/High/Medium; two Low
   availability findings — A1 body cap enforced only after Starlette
-  buffers the whole body (parser-framing dependent; issue pending),
+  buffers the whole body (parser-framing dependent; issue #59),
   A2 projection append linear in lifetime history under the
   database-wide writer lock (issue #58) — both accepted as follow-ups,
   not blockers. Independent Opus second pass: no findings, concurs.
