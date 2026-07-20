@@ -781,6 +781,43 @@ font, image) is forbidden.
 - Prefer editing the one page for the current stage over growing
   index.html. The app's Learn preview live-reloads the open page when you
   save it and shows every manifest page as a tab.
+
+## Bridge conventions — wiring Check into pages
+
+Inside the Learn app, an interactive-profile page runs in a sandboxed
+iframe with a parent-owned lesson bridge: a postMessage handshake, then a
+transferred MessagePort. Pages that record answers follow these rules:
+
+- Persistence goes through bridge operations, nothing else. The sandbox
+  has no network and no forms — a Check button that fetches, posts a
+  form, or writes a file cannot work. Wire every Check /
+  "record my answer" action to the bridge port only.
+- Handshake: on load, post
+  `{"ephemeris": "lesson-bridge", "type": "ready", "abi": [1],
+  "want": ["attempts"]}` to `window.parent` with targetOrigin
+  `new URL(location.href).origin`; re-announce every 250–500 ms until a
+  `welcome` or `reject` arrives, and give up after ~2 s of silence. The
+  `welcome` transfers the port everything else flows over.
+- Identity is the parent's. The `welcome` carries the lesson identity
+  (`lesson_uid`, `page_id`, `page_rev`) and the granted capability set;
+  the page never sends its own lesson/page identity — it has no say.
+- `question_id` comes from the manifest. A Check button records against
+  the exact declared `q_…` id from `questions[]` — never an id invented
+  at runtime, never one derived from the question text. If the question
+  is not declared in the manifest, declare it first: to the app an
+  undeclared question does not exist, so its attempts cannot land.
+- Port requests carry a page-chosen `request_id` (1–128 chars); reuse
+  the same `request_id` when retrying one submission so it records once.
+- Degrade gracefully, always. Handshake silence, a `reject`, or a
+  granted capability set without `attempts` all mean "no persistence
+  here": the page stays fully usable read-only — predictions, reveals,
+  and experiments keep working, and Check shows a quiet
+  "not connected to the Learn app" state instead of erroring or hiding
+  content. The same page must hold up opened directly from disk, under
+  the legacy profile, or in any context without the bridge.
+- Today the granted capability set is empty (the attempts operation is
+  the app's next step). Build pages to these conventions anyway: they
+  pick up recording with no edits once the capability arrives.
 """
 
 
