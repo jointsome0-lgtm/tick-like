@@ -1358,14 +1358,30 @@ with TestClient(app) as c:
                  ).json().get("error") == "invalid-answer")
 
     # crash boundaries: the authority write survives a dead projection, the
-    # response says so, and the next write reconciles the file from SQLite
-    _os.chmod(_at_proj, 0o400)
-    _os.chmod(_at_dir, 0o500)
-    _at_pend = c.post(_at_url, json=dict(
-        _at_body, idempotency_key="vera-pend-1",
-        answer="Vera Example: projection is down."))
-    _os.chmod(_at_dir, 0o755)
-    _os.chmod(_at_proj, 0o600)
+    # response says so, and the next write reconciles the file from SQLite.
+    # Deterministic fault injection (PR-57 round 5): failing the projection
+    # path by NAME kills both the O_APPEND fast path (os.open) and the
+    # atomic rebuild (os.replace onto the projection) — POSIX modes would
+    # not stop uid 0 when the suite runs in a root test container.
+    from unittest import mock as _mock
+    _at_real_open2 = _os.open
+    _at_real_replace = _os.replace
+
+    def _at_proj_open_down(path, *args, **kw):
+        if str(path).endswith(attempts_svc.PROJECTION_NAME):
+            raise OSError(5, "Input/output error")
+        return _at_real_open2(path, *args, **kw)
+
+    def _at_proj_replace_down(src, dst, *args, **kw):
+        if str(dst).endswith(attempts_svc.PROJECTION_NAME):
+            raise OSError(5, "Input/output error")
+        return _at_real_replace(src, dst, *args, **kw)
+
+    with _mock.patch("os.open", side_effect=_at_proj_open_down), \
+            _mock.patch("os.replace", side_effect=_at_proj_replace_down):
+        _at_pend = c.post(_at_url, json=dict(
+            _at_body, idempotency_key="vera-pend-1",
+            answer="Vera Example: projection is down."))
     check("projection failure: attempt durable, response says pending",
           _at_pend.status_code == 200 and _at_pend.json()["result"] == "recorded"
           and _at_pend.json()["projection"] == "pending"
