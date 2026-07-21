@@ -19,6 +19,18 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
+- [ ] 2026-07-21 — `9c85795` through branch `HEAD` on
+  `fix/42-e4-terminal-surfaces` — the entry stays current with every E4 branch
+  commit until the final concrete head is recorded — `app/static/src/terminal.ts`, emitted
+  `app/static/terminal.js`, `app/templates/base.html`,
+  `app/templates/learn.html`, `app/static/style.css`, `.gitattributes`,
+  `verify.py` — phase E session E4 converts the existing terminal client to
+  strict TypeScript and adds a lesson-only bottom learner drawer beside the
+  existing agent surface. The learner drawer opens and connects only on a
+  deliberate click, requests the server's `lesson-learner` role on creation,
+  accepts role from the server session message, scopes stored tabs to the
+  current lesson, and uses storage keys distinct from the retained agent keys.
+
 ## Done
 
 - [x] 2026-07-21 — `d6e3563..1a4f640` on `fix/36-e3-learner-role` —

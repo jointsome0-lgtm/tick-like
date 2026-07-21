@@ -107,7 +107,7 @@
   {% if client_is_local(request) %}
   {# Desktop / localhost-only terminal — a GCP-style bottom drawer docked over the content. #}
   {# the vendored xterm assets ride static_url() cache-busting like every other asset #}
-  <div id="term-drawer" class="term-drawer" hidden aria-hidden="true"
+  <div id="term-drawer" class="term-drawer agent-drawer" hidden aria-hidden="true"
        data-xterm-css="{{ static_url('vendor/xterm.min.css') }}"
        data-xterm-js="{{ static_url('vendor/xterm.min.js') }}"
        data-fit-js="{{ static_url('vendor/xterm-addon-fit.min.js') }}"
@@ -129,12 +129,15 @@
       <button type="button" class="term-btn term-new" id="term-new" title="New terminal" aria-label="New terminal">{{ ic.icon('plus') }}</button>
       <span class="term-meta">localhost · {{ request.client.host }}</span>
       <button type="button" class="term-btn" id="term-min" title="Minimize" aria-label="Minimize terminal">–</button>
-      <button type="button" class="term-btn" id="term-close" title="Close active terminal" aria-label="Close active terminal">{{ ic.icon('close') }}</button>
+      <button type="button" class="term-btn term-close" id="term-close" title="Close active terminal" aria-label="Close active terminal">{{ ic.icon('close') }}</button>
     </div>
     <div id="term-screens" class="term-screens"></div>
     <div id="term-status" class="term-status" hidden></div>
   </div>
   <script src="{{ static_url('terminal.js') }}" defer></script>
   {% endif %}
+  {# Learn overrides this next to the agent drawer so both surfaces share the
+     terminal chrome and runtime while keeping learner markup lesson-only. #}
+  {% block learner_terminal %}{% endblock %}
 </body>
 </html>
