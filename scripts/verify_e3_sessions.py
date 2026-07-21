@@ -180,6 +180,9 @@ def main() -> int:
         env = os.environ.copy()
         env.pop("ACTIVITY_DB", None)
         os.environ.pop("ACTIVITY_DB", None)
+        for name in PROXY_NAMES:
+            env.pop(name, None)
+            os.environ.pop(name, None)
         env.update({
             "ACTIVITY_DATA_DIR": str(data_dir),
             "EPHEMERIS_ENABLE_TERMINAL": "1",

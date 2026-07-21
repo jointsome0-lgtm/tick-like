@@ -300,6 +300,22 @@ def _private_mask_spellings(*paths: Path) -> tuple[str, ...]:
     return tuple(dict.fromkeys(masks))
 
 
+def _learner_private_mask_spellings(
+    *,
+    data_root: Path = LESSONS_DIR.parent,
+    db_path: Path = DB_PATH,
+    repo_root: Path = _REPO_ROOT,
+) -> tuple[str, ...]:
+    """Private directory spellings that a learner sandbox must blank."""
+    db_absolute = db_path.absolute()
+    return _private_mask_spellings(
+        data_root,
+        db_absolute.parent,
+        db_absolute.resolve(strict=False).parent,
+        repo_root,
+    )
+
+
 def _redact_userinfo(url: str) -> str:
     """Strip any user:password@ from a URL's authority for display: an inherited
     proxy URL may carry credentials that must not land in the banner/scrollback."""
@@ -602,12 +618,7 @@ async def _create_session(
         )
         env = _child_env(role)
         private_masks = (
-            await asyncio.to_thread(
-                _private_mask_spellings,
-                LESSONS_DIR.parent,
-                DB_PATH.absolute().parent,
-                _REPO_ROOT,
-            )
+            await asyncio.to_thread(_learner_private_mask_spellings)
             if role == "lesson-learner" else ()
         )
         # Route agent CLIs around country-level blocks via the user's local proxy (if

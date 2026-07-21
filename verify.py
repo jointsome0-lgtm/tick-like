@@ -4188,8 +4188,23 @@ with TestClient(app) as c:
         _mask_link = _mask_base / "private-link"
         _mask_link.symlink_to(_mask_target, target_is_directory=True)
         _mask_spellings = _terminal._private_mask_spellings(_mask_link)
+        _db_target_dir = _mask_base / "resolved-db"
+        _db_target_dir.mkdir()
+        _db_target = _db_target_dir / "activity.sqlite"
+        _db_target.touch()
+        _db_link_dir = _mask_base / "db-link-dir"
+        _db_link_dir.mkdir()
+        _db_link = _db_link_dir / "activity.sqlite"
+        _db_link.symlink_to(_db_target)
+        _db_mask_spellings = _terminal._learner_private_mask_spellings(
+            data_root=_mask_link,
+            db_path=_db_link,
+            repo_root=_terminal._REPO_ROOT,
+        )
     check("E3 private masks include lexical symlinks and resolved targets",
-          _mask_spellings == (str(_mask_link), str(_mask_target)))
+          _mask_spellings == (str(_mask_link), str(_mask_target))
+          and str(_db_link_dir) in _db_mask_spellings
+          and str(_db_target_dir) in _db_mask_spellings)
     _external_private = "/srv/invented-ephemeris-private"
     _external_lessons = f"{_external_private}/lessons"
     _external_bundle = f"{_external_lessons}/invented-bundle"
@@ -4259,11 +4274,7 @@ with TestClient(app) as c:
             )
             and call.kwargs["private_root"] == str(lessons_svc.LESSONS_DIR.parent)
             and set(call.kwargs["private_masks"]) == set(
-                _terminal._private_mask_spellings(
-                    lessons_svc.LESSONS_DIR.parent,
-                    _terminal.DB_PATH.absolute().parent,
-                    _terminal._REPO_ROOT,
-                )
+                _terminal._learner_private_mask_spellings()
             )
             and not any(name in call.kwargs["env"] for name in (
                 *_terminal._PROXY_ENV_VARS, "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR",
