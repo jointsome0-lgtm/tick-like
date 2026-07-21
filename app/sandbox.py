@@ -20,6 +20,7 @@ SandboxProfile = Literal["lesson-agent", "lesson-learner", "lesson-runner"]
 BWRAP = "/home/aina/.local/bin/bwrap"
 USER_HOME = "/home/aina"
 RUNNER_WORKDIR = "/tmp/ephemeris-runner"
+RUNTIME_USERS_DIR = "/run/user"
 
 
 class SandboxError(RuntimeError):
@@ -115,11 +116,45 @@ def _pure_bundle_path(
     return str(path)
 
 
+def _pure_private_root(
+    private_root: str | os.PathLike[str],
+    bundle_root: str | os.PathLike[str],
+) -> str:
+    """Validate the private instance root that owns the lesson authority."""
+    private = Path(private_root)
+    authority = Path(bundle_root)
+    if (
+        not private.is_absolute()
+        or ".." in private.parts
+        or private == Path(private.anchor)
+    ):
+        raise ValueError("private_root must be absolute, non-root, and without '..'")
+    try:
+        relative = authority.relative_to(private)
+    except ValueError as exc:
+        raise ValueError("bundle_root must be inside private_root") from exc
+    if relative == Path("."):
+        raise ValueError("bundle_root must be a strict descendant of private_root")
+    return str(private)
+
+
+def _covered_by_existing_mask(path: str) -> bool:
+    candidate = Path(path)
+    for masked in (Path(USER_HOME), Path("/tmp"), Path(RUNTIME_USERS_DIR)):
+        try:
+            candidate.relative_to(masked)
+            return True
+        except ValueError:
+            pass
+    return False
+
+
 def build_sandbox_argv(
     profile: SandboxProfile,
     bundle_dir: str | os.PathLike[str],
     *,
     bundle_root: str | os.PathLike[str],
+    private_root: str | os.PathLike[str] | None = None,
 ) -> list[str]:
     """Purely build the bubblewrap prefix for ``profile`` and ``bundle_dir``.
 
@@ -132,6 +167,10 @@ def build_sandbox_argv(
     if profile not in _PROFILES:
         raise ValueError(f"unknown sandbox profile: {profile}")
     bundle = _pure_bundle_path(bundle_dir, bundle_root)
+    private = (
+        _pure_private_root(private_root, bundle_root)
+        if private_root is not None else None
+    )
 
     argv = [BWRAP, "--unshare-all"]
     if profile == "lesson-agent":
@@ -144,6 +183,14 @@ def build_sandbox_argv(
         "--tmpfs", "/tmp",
         "--tmpfs", USER_HOME,
     ])
+    if profile == "lesson-learner":
+        # AF_UNIX sockets survive network namespace isolation. Replace the
+        # predictable per-user runtime tree with an empty mount. If a private
+        # instance is configured outside the already blanked home or /tmp,
+        # blank that root too; the selected bundle is re-bound below.
+        argv.extend(["--tmpfs", RUNTIME_USERS_DIR])
+        if private is not None and not _covered_by_existing_mask(private):
+            argv.extend(["--tmpfs", private])
 
     mounts = list(_COMMON_HOME_MOUNTS)
     if profile == "lesson-agent":
@@ -244,6 +291,7 @@ async def spawn_sandboxed(
     command: Sequence[str],
     *,
     bundle_root: str | os.PathLike[str],
+    private_root: str | os.PathLike[str] | None = None,
     stdin: int | None = None,
     stdout: int | None = None,
     stderr: int | None = None,
@@ -255,7 +303,8 @@ async def spawn_sandboxed(
         raise ValueError("sandbox command must not be empty")
     require_sandbox_runtime()
     argv = build_sandbox_argv(
-        profile, bundle_dir, bundle_root=bundle_root
+        profile, bundle_dir, bundle_root=bundle_root,
+        private_root=private_root,
     ) + ["--", *command]
     try:
         return await asyncio.create_subprocess_exec(

@@ -3959,6 +3959,8 @@ with TestClient(app) as c:
                 [os.environ.get("SHELL") or "/bin/bash", "-i"],
             )
             and spawn_args.kwargs["bundle_root"] == str(lessons_svc.LESSONS_DIR)
+            and spawn_args.kwargs["private_root"]
+                == str(lessons_svc.LESSONS_DIR.parent)
             and spawn_args.kwargs["preexec_fn"] is _terminal._child_setup
             and spawn_args.kwargs["env"]["HTTP_PROXY"]
                 == "http://127.0.0.1:10809"
@@ -4163,6 +4165,26 @@ with TestClient(app) as c:
           and _agent_socket_env.get("XDG_RUNTIME_DIR") == "/run/user/1000"
           and "SSH_AUTH_SOCK" not in _learner_socket_env
           and "XDG_RUNTIME_DIR" not in _learner_socket_env)
+    _external_private = "/srv/invented-ephemeris-private"
+    _external_lessons = f"{_external_private}/lessons"
+    _external_bundle = f"{_external_lessons}/invented-bundle"
+    _external_learner_argv = _sandbox.build_sandbox_argv(
+        "lesson-learner", _external_bundle,
+        bundle_root=_external_lessons,
+        private_root=_external_private,
+    )
+    _external_tmpfs = [
+        _external_learner_argv[i + 1]
+        for i, value in enumerate(_external_learner_argv)
+        if value == "--tmpfs"
+    ]
+    check("E3 learner masks runtime sockets and external private instance root",
+          _sandbox.RUNTIME_USERS_DIR in _external_tmpfs
+          and _external_private in _external_tmpfs
+          and _external_learner_argv.index(_external_private)
+              < _external_learner_argv.index("--bind")
+          and _sb_mounts(_external_learner_argv, "--bind")
+              == [(_external_bundle, _external_bundle)])
 
     try:
         _sandbox.require_sandbox_runtime()

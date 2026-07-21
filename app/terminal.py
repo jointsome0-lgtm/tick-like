@@ -597,6 +597,7 @@ async def _create_session(
                     workspace_dir,
                     [shell, "-i"],
                     bundle_root=str(LESSONS_DIR),
+                    private_root=str(LESSONS_DIR.parent),
                     stdin=slave_fd,
                     stdout=slave_fd,
                     stderr=slave_fd,
