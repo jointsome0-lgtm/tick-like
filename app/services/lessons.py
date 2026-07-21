@@ -611,20 +611,27 @@ def bundle_resource_info(lesson: dict, ref: str) -> dict:
     # served from bytes read on ONE descriptor, and when the page qualifies
     # for bridge identity the version token carries the digest of exactly
     # those bytes — what the learner receives and what `page_rev` describes
-    # can no longer be split by a replacement between two opens. Oversized or
-    # vanished-under-us pages fall back to the streaming response (and never
-    # carry identity — same bound as `_hash_regular_no_follow`).
+    # can no longer be split by a replacement between two opens. The token
+    # formula is the SAME one `_file_info` renders and the poll answers
+    # (mtime:profile[:digest16] — PR-60 round 2), for every declared v2
+    # page including legacy-display and other non-bridge profiles, so the
+    # route's `?v` comparison never 409s a page the metadata advertises.
+    # Oversized or vanished-under-us pages return no snapshot (same bound
+    # as `_hash_regular_no_follow`); their token then carries no digest,
+    # which is exactly what the metadata reports for them.
     content = None
     version = str(stat.st_mtime_ns) if stat else "0"
-    if exists and active and read.version == bundle_schema.SCHEMA_V2 and declared_page:
+    versioned_page = (
+        exists and active and read.version == bundle_schema.SCHEMA_V2 and declared_page
+    )
+    if versioned_page:
+        version = f"{stat.st_mtime_ns}:{read.effective_profile}"
         snapshot = _read_page_snapshot(path)
         if snapshot is not None:
             content, snap_digest, stat = snapshot
-            version = str(stat.st_mtime_ns)
+            version = f"{stat.st_mtime_ns}:{read.effective_profile}"
             if read.bridge_eligible and lesson.get("uid"):
-                version = (
-                    f"{stat.st_mtime_ns}:{read.effective_profile}:{snap_digest[:16]}"
-                )
+                version += f":{snap_digest[:16]}"
     return {
         "entry": ref,
         "path": str(path),
@@ -640,6 +647,11 @@ def bundle_resource_info(lesson: dict, ref: str) -> dict:
         # Snapshot bytes when this response must be byte-bound (None = the
         # route streams the file as before).
         "content": content,
+        # True for a declared v2 page: the serving route enforces the `?v`
+        # binding on this surface even when no snapshot could be taken
+        # (fail closed — PR-60 round 2), so a raced replacement can never
+        # slip through the streaming fallback.
+        "versioned_page": versioned_page,
     }
 
 

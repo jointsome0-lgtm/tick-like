@@ -1242,24 +1242,25 @@ def get_lesson_bundle_file(lesson_id: int, resource: str, v: str | None = None):
     if info["active"]:
         headers["Content-Security-Policy"] = _preview_csp(info["profile"])
         headers["X-Lesson-Preview-Version"] = info["version"]
+    if v is not None and info["versioned_page"] and v != info["version"]:
+        # Serve-time version binding (PR-60 rounds 1-2): the parent
+        # navigates with the token it is going to arm; a declared v2 page
+        # whose current state no longer produces that token is refused —
+        # INCLUDING when no snapshot could be taken (raced replacement,
+        # grown past the size bound): the streaming fallback must not
+        # serve bytes the requested token does not describe. The transient
+        # swap-restore case self-heals on the reload below; a real edit
+        # moves the metadata token and the parent re-navigates with it.
+        return Response(
+            content=_STALE_SNAPSHOT_HTML,
+            status_code=409,
+            media_type="text/html; charset=utf-8",
+            headers=headers,
+        )
     if info["content"] is not None:
         # Declared v2 page: byte-bound snapshot (drain D2 L2) — the body IS
         # the bytes the version token's digest describes; FileResponse would
         # re-open the path and could serve a racing replacement instead.
-        if v is not None and v != info["version"]:
-            # Serve-time version binding (PR-60 round 1): the parent
-            # navigates with the token it is going to arm; bytes that no
-            # longer produce that token are refused, so the learner is
-            # never SHOWN a revision the armed page_rev does not describe.
-            # The transient swap-restore case self-heals on the reload
-            # below; a real edit moves the metadata token and the parent
-            # re-navigates with it.
-            return Response(
-                content=_STALE_SNAPSHOT_HTML,
-                status_code=409,
-                media_type="text/html; charset=utf-8",
-                headers=headers,
-            )
         return Response(
             content=info["content"], media_type=info["media_type"], headers=headers
         )

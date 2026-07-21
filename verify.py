@@ -1746,7 +1746,28 @@ with TestClient(app) as c:
     check("oversized page: attempts refuse on the server too (stale revision)",
           c.post(_at_url, json=dict(_at_body, idempotency_key="vera-big-page-1")
                  ).json().get("stale") is True)
+    # round 2 fail-closed: a declared page that cannot be snapshotted (here:
+    # grown past the bound) refuses a versioned request instead of letting
+    # the streaming fallback serve bytes the requested token doesn't describe
+    _d5_gone = c.get(f"/learn/lessons/{_at_id}/files/index.html",
+                     params={"v": _d5_meta["version"]})
+    check("unsnapshottable declared page fails closed on a versioned request",
+          _d5_gone.status_code == 409 and "location.reload" in _d5_gone.text)
     (_at_dir / "index.html").write_bytes(_d5_orig)  # restore
+    # round 2 parity: a non-bridge v2 page (legacy-display profile) uses the
+    # same mtime:profile token in the metadata and the file route — ?v never
+    # 409s a page the metadata advertises
+    bschema.write_manifest(_at_dir / "lesson.json",
+                           dict(_at_raw, runtime={"profile": "legacy-display"}))
+    _d5_leg_meta = c.get(f"/learn/lessons/{_at_id}/preview-meta",
+                         params={"entry": "index.html"}).json()
+    _d5_leg_file = c.get(f"/learn/lessons/{_at_id}/files/index.html",
+                         params={"v": _d5_leg_meta["version"]})
+    check("legacy v2 page: meta and route tokens agree, ?v serves 200",
+          _d5_leg_meta["bridge"] is False
+          and _d5_leg_meta["version"].endswith(":legacy-display")
+          and _d5_leg_file.status_code == 200)
+    bschema.write_manifest(_at_dir / "lesson.json", _at_raw)  # restore
     # the digest cache evicts one entry when full, never the whole set
     check("page digest cache evicts oldest, not clear-all",
           "_PAGE_DIGEST_CACHE.clear()" not in
