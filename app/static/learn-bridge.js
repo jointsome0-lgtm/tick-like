@@ -320,7 +320,13 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             : null;
     };
     const postAttempt = async (boundPort, gen, requestId, questionId, answer) => {
-        attemptsInflight.add(requestId);
+        /* Capture THIS document's in-flight set (PR-60 round 5): teardown
+         * replaces `attemptsInflight`, so a call that outlives its document
+         * must clean up its own instance — deleting from the successor's set
+         * would un-mark a retry whose HTTP call is still pending and let extra
+         * concurrent POSTs past the per-document duplicate/cap logic. */
+        const inflight = attemptsInflight;
+        inflight.add(requestId);
         try {
             /* Per-operation server-side re-validation (the D2 review gate): the
              * write is allowed only while fresh metadata still advertises exactly
@@ -409,7 +415,7 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             boundPort.postMessage(reply);
         }
         finally {
-            attemptsInflight.delete(requestId);
+            inflight.delete(requestId);
         }
     };
     const onPortMessage = (ev) => {

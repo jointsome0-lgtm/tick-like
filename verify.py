@@ -1768,25 +1768,26 @@ with TestClient(app) as c:
           and _d5_leg_meta["version"].endswith(":legacy-display")
           and _d5_leg_file.status_code == 200)
     bschema.write_manifest(_at_dir / "lesson.json", _at_raw)  # restore
-    # round 3: a page "vanishing" between is_file() and the size pre-check
-    # (stat raising) must fall through to the descriptor-bound hash open —
-    # never a 500 out of the metadata poll
+    # rounds 3+5: a page vanishing between is_file() and the lstat size
+    # pre-check must fall through to the descriptor-bound hash open — never
+    # a 500 out of the metadata poll. The file is REALLY gone here; only
+    # is_file() reports the stale pre-race truth, so the pre-check's
+    # os.lstat raises exactly as in the race.
     from unittest import mock as _d5_mock
-    _van_real_stat = Path.stat
-    _van_state = {"n": 0}
+    _van_real_isfile = Path.is_file
 
-    def _van_stat(self, **kw):
+    def _van_isfile(self):
         if str(self).endswith(f"{_at['slug']}/index.html"):
-            _van_state["n"] += 1
-            if _van_state["n"] == 2:  # the pre-check call, after is_file()
-                raise FileNotFoundError(2, "raced away")
-        return _van_real_stat(self, **kw)
+            return True  # the stale answer the race saw
+        return _van_real_isfile(self)
 
-    with _d5_mock.patch.object(Path, "stat", _van_stat):
+    _van_orig = (_at_dir / "index.html").read_bytes()
+    (_at_dir / "index.html").unlink()
+    with _d5_mock.patch.object(Path, "is_file", _van_isfile):
         _van_info = lessons_svc.lesson_file_info(_at, "index.html")
-    check("stat race in the size pre-check falls through, never a 500",
-          _van_state["n"] >= 2 and _van_info["exists"] is True
-          and _van_info["bridge_page"] is not None)
+    (_at_dir / "index.html").write_bytes(_van_orig)  # restore
+    check("vanish race in the lstat pre-check fails closed, never a 500",
+          _van_info["exists"] is False and _van_info["bridge_page"] is None)
     # round 4: a symlink raced in AFTER the path_has_symlink() check (mocked
     # away here) must not have its target sized by the pre-check — lstat +
     # S_ISREG routes it to the O_NOFOLLOW open, which fails closed (§2)
