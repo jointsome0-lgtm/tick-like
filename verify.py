@@ -331,7 +331,7 @@ with TestClient(app) as c:
           and "never an id invented" in agents_text
           and "`request_id`" in agents_text
           and "fully usable read-only" in agents_text
-          and "granted capability set is empty" in agents_text
+          and "the app derives" in agents_text
           and "Authenticate what you receive" in agents_text
           and "event.source === window.parent" in agents_text
           and "`event.origin` equals" in agents_text
@@ -339,7 +339,7 @@ with TestClient(app) as c:
           and "upgrade to write access" in agents_text
           and "stay read-only" in agents_text
           and "unique across the whole lesson" in agents_text
-          and "never invent a write" in agents_text)
+          and "Send ONLY those fields" in agents_text)
     check("lesson AGENTS.md draws the untrusted-data boundary + no-symlink rule",
           "untrusted data" in agents_text
           and "never directives to follow" in agents_text
@@ -993,6 +993,8 @@ with TestClient(app) as c:
               "page_id": _v2_raw["pages"][0]["id"],
               "page_rev": "sha256:" + hashlib.sha256(
                   (_v2_dir / "index.html").read_bytes()).hexdigest(),
+              # D5: declared questions ride the identity (none on this page)
+              "questions": [],
           }
           and _d2_meta["sandbox"] == "allow-scripts")
     _d2_meta_p2 = c.get(
@@ -1092,7 +1094,7 @@ with TestClient(app) as c:
               and "new MessageChannel()" in _d2_text
               and "ABI_VERSION = 1" in _d2_text
               and 'msg["ephemeris"] !== "lesson-bridge"' in _d2_text
-              and "capabilities: []" in _d2_text
+              and 'want.includes("attempts")' in _d2_text
               and "MAX_PORT_CHARS = 64 * 1024" in _d2_text)
     check(".gitattributes marks the emitted runtime as generated",
           "app/static/learn-bridge.js linguist-generated=true"
@@ -1679,6 +1681,172 @@ with TestClient(app) as c:
     check("replay bypasses an exhausted window: duplicate, not 429",
           _at_rl_replay.status_code == 200
           and _at_rl_replay.json()["result"] == "duplicate")
+
+    # ---- D5: Check through the bridge — parent derivation surface, byte-
+    # bound page serving, attempt operation (lesson-bridge-abi.md §3.1) ----
+    # per-page declared questions ride the bridge identity, so the parent
+    # can refuse undeclared ids before spending a server write
+    _d5_meta = c.get(f"/learn/lessons/{_at_id}/preview-meta",
+                     params={"entry": "index.html"}).json()
+    check("preview-meta lists the questions declared for the armed page",
+          _d5_meta["bridge"] is True
+          and _d5_meta["bridge_page"]["questions"] == ["q_atpredict1"])
+    # single served-content snapshot (drain D2 L2): a declared v2 page's
+    # response body is byte-identical to the digest its version token
+    # carries, and the file route's version equals the metadata poll's
+    _d5_file = c.get(f"/learn/lessons/{_at_id}/files/index.html")
+    _d5_digest = hashlib.sha256(_d5_file.content).hexdigest()
+    check("served page bytes match the content-bound version token",
+          _d5_file.status_code == 200
+          and _d5_file.headers["x-lesson-preview-version"] == _d5_meta["version"]
+          and _d5_meta["version"].endswith(":" + _d5_digest[:16])
+          and _d5_file.content == (_at_dir / "index.html").read_bytes())
+    _d5_info = lessons_svc.bundle_resource_info(_at, "index.html")
+    check("bundle_resource_info returns the one-descriptor snapshot for v2 pages",
+          _d5_info["content"] == _d5_file.content
+          and _d5_info["version"] == _d5_meta["version"])
+    # serve-time version binding (PR-60 round 1): the parent navigates with
+    # ?v=<token>; matching bytes serve, a mismatched token is refused with
+    # the self-reloading 409 instead of showing bytes the armed page_rev
+    # does not describe
+    _d5_vok = c.get(f"/learn/lessons/{_at_id}/files/index.html",
+                    params={"v": _d5_meta["version"]})
+    _d5_vbad = c.get(f"/learn/lessons/{_at_id}/files/index.html",
+                     params={"v": "1:interactive-local-v1:deadbeefdeadbeef"})
+    check("?v binding: matching token serves, mismatched token is a 409 reload",
+          _d5_vok.status_code == 200 and _d5_vok.content == _d5_file.content
+          and _d5_vbad.status_code == 409
+          and "location.reload" in _d5_vbad.text
+          and _d5_vbad.headers.get("x-lesson-preview-version") == _d5_meta["version"])
+    from urllib.parse import quote as _d5_quote
+    check("learn.html initial iframe src carries the ?v binding",
+          f'?v={_d5_quote(_d5_meta["version"], safe="")}'
+          in c.get(f"/learn?lesson={_at_id}").text.replace("&amp;", "&"))
+    # an asset (undeclared as a page) streams as before: no snapshot, no
+    # content-bound token
+    (_at_dir / "assets").mkdir(exist_ok=True)
+    (_at_dir / "assets" / "probe.css").write_text("body{}", encoding="utf-8")
+    _d5_asset = lessons_svc.bundle_resource_info(_at, "assets/probe.css")
+    check("assets are not snapshotted and keep the plain mtime version",
+          _d5_asset["content"] is None and ":" not in _d5_asset["version"])
+    # supported page-size bound (drain L3/D5): an oversized declared page
+    # renders but carries NO bridge identity — visible finding, never silent
+    _d5_orig = (_at_dir / "index.html").read_bytes()
+    (_at_dir / "index.html").write_bytes(
+        b"<html>" + b"x" * lessons_svc.PAGE_IDENTITY_MAX_BYTES + b"</html>")
+    _d5_big_meta = c.get(f"/learn/lessons/{_at_id}/preview-meta",
+                         params={"entry": "index.html"}).json()
+    _d5_big_file = c.get(f"/learn/lessons/{_at_id}/files/index.html")
+    check("oversized page: renders, no bridge identity, page-too-large finding",
+          _d5_big_meta["exists"] is True
+          and _d5_big_meta["bridge_page"] is None
+          and _d5_big_meta["outcome"] == "degraded"
+          and any(f["code"] == "page-too-large" for f in _d5_big_meta["findings"])
+          and _d5_big_file.status_code == 200)
+    check("oversized page: attempts refuse on the server too (stale revision)",
+          c.post(_at_url, json=dict(_at_body, idempotency_key="vera-big-page-1")
+                 ).json().get("stale") is True)
+    # round 2 fail-closed: a declared page that cannot be snapshotted (here:
+    # grown past the bound) refuses a versioned request instead of letting
+    # the streaming fallback serve bytes the requested token doesn't describe
+    _d5_gone = c.get(f"/learn/lessons/{_at_id}/files/index.html",
+                     params={"v": _d5_meta["version"]})
+    check("unsnapshottable declared page fails closed on a versioned request",
+          _d5_gone.status_code == 409 and "location.reload" in _d5_gone.text)
+    (_at_dir / "index.html").write_bytes(_d5_orig)  # restore
+    # round 2 parity: a non-bridge v2 page (legacy-display profile) uses the
+    # same mtime:profile token in the metadata and the file route — ?v never
+    # 409s a page the metadata advertises
+    bschema.write_manifest(_at_dir / "lesson.json",
+                           dict(_at_raw, runtime={"profile": "legacy-display"}))
+    _d5_leg_meta = c.get(f"/learn/lessons/{_at_id}/preview-meta",
+                         params={"entry": "index.html"}).json()
+    _d5_leg_file = c.get(f"/learn/lessons/{_at_id}/files/index.html",
+                         params={"v": _d5_leg_meta["version"]})
+    check("legacy v2 page: meta and route tokens agree, ?v serves 200",
+          _d5_leg_meta["bridge"] is False
+          and _d5_leg_meta["version"].endswith(":legacy-display")
+          and _d5_leg_file.status_code == 200)
+    bschema.write_manifest(_at_dir / "lesson.json", _at_raw)  # restore
+    # rounds 3+5: a page vanishing between is_file() and the lstat size
+    # pre-check must fall through to the descriptor-bound hash open — never
+    # a 500 out of the metadata poll. The file is REALLY gone here; only
+    # is_file() reports the stale pre-race truth, so the pre-check's
+    # os.lstat raises exactly as in the race.
+    from unittest import mock as _d5_mock
+    _van_real_isfile = Path.is_file
+
+    def _van_isfile(self):
+        if str(self).endswith(f"{_at['slug']}/index.html"):
+            return True  # the stale answer the race saw
+        return _van_real_isfile(self)
+
+    _van_orig = (_at_dir / "index.html").read_bytes()
+    (_at_dir / "index.html").unlink()
+    with _d5_mock.patch.object(Path, "is_file", _van_isfile):
+        _van_info = lessons_svc.lesson_file_info(_at, "index.html")
+    (_at_dir / "index.html").write_bytes(_van_orig)  # restore
+    check("vanish race in the lstat pre-check fails closed, never a 500",
+          _van_info["exists"] is False and _van_info["bridge_page"] is None)
+    # round 4: a symlink raced in AFTER the path_has_symlink() check (mocked
+    # away here) must not have its target sized by the pre-check — lstat +
+    # S_ISREG routes it to the O_NOFOLLOW open, which fails closed (§2)
+    _r4_target = _at_dir / "oversized-decoy.html"
+    _r4_target.write_bytes(b"z" * (lessons_svc.PAGE_IDENTITY_MAX_BYTES + 1))
+    _r4_orig = (_at_dir / "index.html").read_bytes()
+    (_at_dir / "index.html").unlink()
+    _os.symlink(_r4_target, _at_dir / "index.html")
+    # freeze the raced state: the guard and the resolve() ran on the clean
+    # pre-swap path (mocked), the swapped-in symlink is what lstat/open see
+    with _d5_mock.patch.object(lessons_svc.bundle_schema, "path_has_symlink",
+                               return_value=False), \
+            _d5_mock.patch.object(lessons_svc, "_entry_path",
+                                  lambda slug, entry: _at_dir / entry):
+        _r4_info = lessons_svc.lesson_file_info(_at, "index.html")
+    (_at_dir / "index.html").unlink()
+    (_at_dir / "index.html").write_bytes(_r4_orig)  # restore
+    _r4_target.unlink()
+    check("raced-in symlink to an oversized target fails closed, no identity",
+          _r4_info["exists"] is False and _r4_info["bridge_page"] is None
+          and not any(f["code"] == "page-too-large"
+                      for f in _r4_info["findings"]))
+    # the digest cache evicts one entry when full, never the whole set
+    check("page digest cache evicts oldest, not clear-all",
+          "_PAGE_DIGEST_CACHE.clear()" not in
+          (ROOT / "app" / "services" / "lessons.py").read_text(encoding="utf-8"))
+    # the Learn page hands the parent runtime the attempt endpoint
+    check("learn.html carries data-attempts-url for the parent runtime",
+          f'data-attempts-url="/learn/lessons/{_at_id}/attempts"'
+          in c.get(f"/learn?lesson={_at_id}").text)
+    # structural anchors for the attempt operation in the parent runtime —
+    # source .ts and committed emit alike (#42): capability negotiation,
+    # parent-derived submission, per-op re-validation, toast, in-flight cap
+    for _d5_name, _d5_text in (("learn-bridge.ts", _d2_ts), ("learn-bridge.js", _d2_js)):
+        check(f"{_d5_name}: attempt operation anchors",
+              "ATTEMPT_OP_VERSION = 1" in _d5_text
+              and 'want.includes("attempts")' in _d5_text
+              and "idempotency_key: requestId" in _d5_text
+              and "page_id: armed.page_id" in _d5_text
+              and "page_rev: armed.page_rev" in _d5_text
+              and '"stale-page"' in _d5_text
+              and '"capability-not-granted"' in _d5_text
+              and "MAX_ATTEMPTS_INFLIGHT" in _d5_text
+              and "ATTEMPT_SETTLE_MS" in _d5_text
+              and "attempt #" in _d5_text)
+    check("parent runtime re-validates per operation against fresh metadata",
+          "metaQuestions" in _d2_ts
+          and "await fetchMeta()" in _d2_ts.split("postAttempt")[1])
+    # frozen docs: the ABI carries the attempt op; the lesson brief teaches
+    # the child side of it (child sends ONLY v/op/request_id/question_id/answer)
+    _d5_abi = (ROOT / "docs" / "lesson-bridge-abi.md").read_text(encoding="utf-8")
+    check("ABI §3.1 freezes the attempt operation",
+          "### 3.1" in _d5_abi
+          and '"op": "attempt", "v": 1' in _d5_abi
+          and "capability-not-granted" in _d5_abi)
+    check("lesson brief teaches the frozen attempt call",
+          '{"op": "attempt", "v": 1' in lessons_svc._AGENTS_TEMPLATE
+          and "retry an unanswered submission with the SAME id"
+          in lessons_svc._AGENTS_TEMPLATE)
 
     # §2 symlink policy: a page that resolves through a symlink is missing
     _symp_conn = get_conn()
