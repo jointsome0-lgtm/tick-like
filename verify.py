@@ -356,12 +356,20 @@ with TestClient(app) as c:
           lessons_svc.prepare_terminal_workspace("../evil") is None
           and lessons_svc.prepare_terminal_workspace("no-such-lesson-slug") is None
           and lessons_svc.prepare_terminal_workspace(None) is None)
+    _brief_paths = [Path(ws_info["dir"]) / name for name in ("AGENTS.md", "CLAUDE.md")]
+    _brief_before = [(path.stat().st_mtime_ns, path.read_bytes()) for path in _brief_paths]
+    _learner_ws = lessons_svc.resolve_terminal_workspace(_lt["slug"])
+    _brief_after = [(path.stat().st_mtime_ns, path.read_bytes()) for path in _brief_paths]
+    check("resolve_terminal_workspace validates the bundle without rewriting briefs",
+          _learner_ws == ws_info and _brief_before == _brief_after
+          and lessons_svc.resolve_terminal_workspace("../evil") is None
+          and lessons_svc.resolve_terminal_workspace("no-such-lesson-slug") is None)
     term_py = (ROOT / "app" / "terminal.py").read_text(encoding="utf-8")
     check("terminal.py routes lesson sessions through the lesson-agent sandbox",
           "prepare_terminal_workspace" in term_py
           and 'ws.query_params.get("lesson")' in term_py
           and 'await spawn_sandboxed(' in term_py
-          and '"lesson-agent" if lesson is not None else "plain"' in term_py)
+          and 'return "lesson-agent" if lesson is not None else "plain"' in term_py)
     check("terminal.js opens/reuses a lesson tab and passes the slug on create",
           "function openLessonTab" in terminal_js
           and "'lesson=' + encodeURIComponent(tab.lesson)" in terminal_js
@@ -3951,6 +3959,9 @@ with TestClient(app) as c:
                 [os.environ.get("SHELL") or "/bin/bash", "-i"],
             )
             and spawn_args.kwargs["bundle_root"] == str(lessons_svc.LESSONS_DIR)
+            and spawn_args.kwargs["private_root"]
+                == str(lessons_svc.LESSONS_DIR.parent)
+            and spawn_args.kwargs["private_masks"] == ()
             and spawn_args.kwargs["preexec_fn"] is _terminal._child_setup
             and spawn_args.kwargs["env"]["HTTP_PROXY"]
                 == "http://127.0.0.1:10809"
@@ -4037,7 +4048,6 @@ with TestClient(app) as c:
         attach_ws = _E2Sock({
             "sid": attach_sess.sid,
             "lesson": "conflicting-lesson",
-            "role": "plain",
         })
         immutable = True
         for attr, value in (
@@ -4104,6 +4114,238 @@ with TestClient(app) as c:
           and _proxy_agent.get("HTTPS_PROXY") == "http://127.0.0.1:19091"
           and _proxy_learner == {}
           and _proxy_off == ({}, {}))
+
+    # --- E3: closed role selector + concurrent agent/learner integration -----
+    check("E3 role enum is closed and absent selector preserves E2 semantics",
+          _terminal._TERMINAL_ROLES == (
+              "plain", "lesson-agent", "lesson-learner",
+          )
+          and _terminal._select_create_role(None, None) == "plain"
+          and _terminal._select_create_role(_lt["slug"], None) == "lesson-agent")
+    _plain_lesson_refused = False
+    try:
+        _terminal._select_create_role(_lt["slug"], "plain")
+    except _terminal._SessionRequestError:
+        _plain_lesson_refused = True
+    check("E3 explicit plain cannot bypass the sandboxed lesson boundary",
+          _plain_lesson_refused)
+    _selector_refusals = 0
+    for _lesson_arg, _role_arg in (
+        (None, "lesson-learner"),
+        (_lt["slug"], "unknown"),
+    ):
+        try:
+            _terminal._select_create_role(_lesson_arg, _role_arg)
+        except _terminal._SessionRequestError:
+            _selector_refusals += 1
+    _sid_role_ws = _E2Sock({
+        "sid": "invented-stale-sid",
+        "lesson": _lt["slug"],
+        "role": "lesson-learner",
+    })
+    with _sandbox_mock.patch.object(_terminal, "_ws_is_trusted", return_value=True), \
+            _sandbox_mock.patch.object(_terminal, "_reap_idle"), \
+            _sandbox_mock.patch.object(_terminal, "_ensure_reaper"), \
+            _sandbox_mock.patch.object(
+                _terminal, "_create_session",
+                new=_sandbox_mock.AsyncMock()) as _sid_role_create:
+        _asyncio.run(_terminal._serve_ws(_sid_role_ws))
+    check("E3 selector validation refuses no-lesson, unknown, and sid attach",
+          _selector_refusals == 2
+          and _sid_role_create.call_count == 0
+          and _sid_role_ws.accepted and _sid_role_ws.closed
+          and b"invalid session request" in b"".join(_sid_role_ws.sent_bytes))
+    with _sandbox_mock.patch.dict(os.environ, {
+        "SSH_AUTH_SOCK": "/run/user/1000/agent.sock",
+        "XDG_RUNTIME_DIR": "/run/user/1000",
+        "HOME": "/root",
+        "PATH": "/root/private-bin:/usr/bin",
+        "SHELL": "/root/private-shell",
+        "XDG_CONFIG_HOME": "/srv/private-config",
+        "XDG_DATA_HOME": "/srv/private-data",
+        "XDG_CACHE_HOME": "/srv/private-cache",
+        "XDG_STATE_HOME": "/srv/private-state",
+    }):
+        _agent_socket_env = _terminal._child_env("lesson-agent")
+        _learner_socket_env = _terminal._child_env("lesson-learner")
+    check("E3 learner child env strips inherited host-socket discovery paths",
+          _agent_socket_env.get("SSH_AUTH_SOCK") == "/run/user/1000/agent.sock"
+          and _agent_socket_env.get("XDG_RUNTIME_DIR") == "/run/user/1000"
+          and "SSH_AUTH_SOCK" not in _learner_socket_env
+          and "XDG_RUNTIME_DIR" not in _learner_socket_env
+          and _learner_socket_env.get("HOME") == _sandbox.USER_HOME
+          and _learner_socket_env.get("SHELL") == "/bin/bash"
+          and _learner_socket_env.get("PATH")
+              == "/home/aina/.local/bin:/usr/local/bin:/usr/bin:/bin"
+          and not any(name in _learner_socket_env for name in (
+              "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+              "XDG_STATE_HOME",
+          )))
+    with tempfile.TemporaryDirectory(prefix="ephemeris-e3-mask-") as _mask_tmp:
+        _mask_base = Path(_mask_tmp)
+        _mask_target = _mask_base / "resolved-private"
+        _mask_target.mkdir()
+        _mask_link = _mask_base / "private-link"
+        _mask_link.symlink_to(_mask_target, target_is_directory=True)
+        _mask_spellings = _terminal._private_mask_spellings(_mask_link)
+        _lesson_store_target = _mask_base / "resolved-lesson-store"
+        _lesson_store_target.mkdir()
+        _lesson_store_link = _mask_base / "lessons-link"
+        _lesson_store_link.symlink_to(
+            _lesson_store_target, target_is_directory=True)
+        _db_target_dir = _mask_base / "resolved-db"
+        _db_target_dir.mkdir()
+        _db_target = _db_target_dir / "activity.sqlite"
+        _db_target.touch()
+        _db_link_dir = _mask_base / "db-link-dir"
+        _db_link_dir.mkdir()
+        _db_link = _db_link_dir / "activity.sqlite"
+        _db_link.symlink_to(_db_target)
+        _db_mask_spellings = _terminal._learner_private_mask_spellings(
+            data_root=_mask_link,
+            lesson_root=_lesson_store_link,
+            db_path=_db_link,
+            repo_root=_terminal._REPO_ROOT,
+        )
+    check("E3 private masks include lexical symlinks and resolved targets",
+          _mask_spellings == (str(_mask_link), str(_mask_target))
+          and str(_lesson_store_link) in _db_mask_spellings
+          and str(_lesson_store_target) in _db_mask_spellings
+          and str(_db_link_dir) in _db_mask_spellings
+          and str(_db_target_dir) in _db_mask_spellings)
+    _external_private = "/srv/invented-ephemeris-private"
+    _external_lessons = f"{_external_private}/lessons"
+    _external_bundle = f"{_external_lessons}/invented-bundle"
+    _external_learner_argv = _sandbox.build_sandbox_argv(
+        "lesson-learner", _external_bundle,
+        bundle_root=_external_lessons,
+        private_root=_external_private,
+    )
+    _external_tmpfs = [
+        _external_learner_argv[i + 1]
+        for i, value in enumerate(_external_learner_argv)
+        if value == "--tmpfs"
+    ]
+    check("E3 learner masks runtime sockets and external private instance root",
+          _sandbox.RUNTIME_DIR in _external_tmpfs
+          and _external_private in _external_tmpfs
+          and _external_learner_argv.index(_external_private)
+              < _external_learner_argv.index("--bind")
+          and _sb_mounts(_external_learner_argv, "--bind")
+              == [(_external_bundle, _external_bundle)])
+    _nested_private = "/home/aina/go/invented-ephemeris-private"
+    _nested_lessons = f"{_nested_private}/lessons"
+    _nested_bundle = f"{_nested_lessons}/invented-bundle"
+    _db_override_root = "/opt/invented-ephemeris-db"
+    _checkout_root = "/workspace/invented-ephemeris-checkout"
+    _nested_learner_argv = _sandbox.build_sandbox_argv(
+        "lesson-learner", _nested_bundle,
+        bundle_root=_nested_lessons,
+        private_root=_nested_private,
+        private_masks=(_db_override_root, _checkout_root),
+    )
+    _nested_tmpfs = [
+        _nested_learner_argv[i + 1]
+        for i, value in enumerate(_nested_learner_argv)
+        if value == "--tmpfs"
+    ]
+    check("E3 learner masks cache-nested data, DB override, and external checkout",
+          _nested_private in _nested_tmpfs
+          and _db_override_root in _nested_tmpfs
+          and _checkout_root in _nested_tmpfs
+          and _nested_learner_argv.index("/home/aina/go")
+              < _nested_learner_argv.index(_nested_private)
+          and _nested_learner_argv.index(_db_override_root)
+              < _nested_learner_argv.index("--bind"))
+
+    async def _e3_learner_plumbing():
+        workspace = {"dir": ws_info["dir"], "slug": _lt["slug"], "title": "demo"}
+        proc = _types.SimpleNamespace(returncode=0)
+        with _sandbox_mock.patch.object(
+                _terminal, "resolve_terminal_workspace", return_value=workspace) as resolve, \
+                _sandbox_mock.patch.object(
+                    _terminal, "prepare_terminal_workspace") as prepare, \
+                _sandbox_mock.patch.object(
+                    _terminal, "_detect_proxy_env", return_value={}) as proxy, \
+                _sandbox_mock.patch.object(
+                    _terminal, "spawn_sandboxed",
+                    new=_sandbox_mock.AsyncMock(return_value=proc)) as spawn, \
+                _sandbox_mock.patch.object(_terminal._TermSession, "start"):
+            session = await _terminal._create_session(
+                _lt["slug"], "lesson-learner")
+        call = spawn.call_args
+        result = (
+            resolve.call_count == 1 and prepare.call_count == 0
+            and proxy.call_args.args == ("lesson-learner",)
+            and call.args[:3] == (
+                "lesson-learner", workspace["dir"], ["/bin/bash", "-i"],
+            )
+            and call.kwargs["private_root"] == str(lessons_svc.LESSONS_DIR.parent)
+            and set(call.kwargs["private_masks"]) == set(
+                _terminal._learner_private_mask_spellings()
+            )
+            and not any(name in call.kwargs["env"] for name in (
+                *_terminal._PROXY_ENV_VARS, "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR",
+            ))
+        )
+        _terminal._SESSIONS.pop(session.sid, None)
+        os.close(session.master_fd)
+        return result
+
+    check("E3 learner spawn plumbs only its private masks and no socket/proxy env",
+          _asyncio.run(_e3_learner_plumbing()))
+
+    try:
+        _sandbox.require_sandbox_runtime()
+        _e3_host_runtime = True
+        _e3_runtime_detail = ""
+    except _sandbox.SandboxError as exc:
+        _e3_host_runtime = False
+        _e3_runtime_detail = str(exc)
+    if _e3_host_runtime:
+        _e3_override_sentinel = (
+            Path(os.environ["ACTIVITY_DATA_DIR"])
+            / "invented-e3-inherited-override.sqlite"
+        )
+        _e3_probe_env = os.environ.copy()
+        _e3_probe_env["ACTIVITY_DB"] = str(_e3_override_sentinel)
+        _e3_probe_run = subprocess.run(
+            [sys.executable, "scripts/verify_e3_sessions.py"],
+            cwd=ROOT,
+            env=_e3_probe_env,
+            text=True,
+            capture_output=True,
+        )
+        try:
+            _e3_probe = json.loads(_e3_probe_run.stdout)
+        except (TypeError, ValueError):
+            _e3_probe = {}
+        _e3_extra = _e3_probe_run.stderr.strip() or _e3_probe_run.stdout.strip()
+        check("E3 host probe: ?role= wire has all three required refusals",
+              _e3_probe_run.returncode == 0
+              and _e3_probe.get("wire_param") == "role"
+              and _e3_probe.get("selector_without_lesson_refused") is True
+              and _e3_probe.get("unknown_role_refused") is True
+              and _e3_probe.get("selector_with_sid_refused") is True
+              and not _e3_override_sentinel.exists(),
+              _e3_extra)
+        check("E3 host probe: concurrent WS sessions echo both roles",
+              _e3_probe.get("agent_role_echoed") is True
+              and _e3_probe.get("learner_role_echoed") is True
+              and _e3_probe.get("both_shells_live") is True
+              and _e3_probe.get("stale_learner_sid_refused") is True,
+              _e3_extra)
+        check("E3 host probe: learner leaves both briefs untouched",
+              _e3_probe.get("briefs_unchanged") is True, _e3_extra)
+        check("E3 host probe: agent network; learner no network/proxy/socket env",
+              _e3_probe.get("agent_network") is True
+              and _e3_probe.get("learner_no_network") is True
+              and _e3_probe.get("learner_no_proxy_env") is True
+              and _e3_probe.get("learner_no_socket_env") is True,
+              _e3_extra)
+    else:
+        check("E3 host probe skipped when sandbox runtime is unavailable",
+              True, _e3_runtime_detail)
 
     # --- Retro capture (docs/retro-spec.md, issue #49) ----------------------
     # The period grammar mirrors exp2res services/time_input.py; the journaled

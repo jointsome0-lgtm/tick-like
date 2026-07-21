@@ -20,6 +20,7 @@ SandboxProfile = Literal["lesson-agent", "lesson-learner", "lesson-runner"]
 BWRAP = "/home/aina/.local/bin/bwrap"
 USER_HOME = "/home/aina"
 RUNNER_WORKDIR = "/tmp/ephemeris-runner"
+RUNTIME_DIR = "/run"
 
 
 class SandboxError(RuntimeError):
@@ -115,11 +116,74 @@ def _pure_bundle_path(
     return str(path)
 
 
+def _pure_private_root(
+    private_root: str | os.PathLike[str],
+    bundle_root: str | os.PathLike[str],
+) -> str:
+    """Validate the private instance root that owns the lesson authority."""
+    private = Path(private_root)
+    authority = Path(bundle_root)
+    if (
+        not private.is_absolute()
+        or ".." in private.parts
+        or private == Path(private.anchor)
+    ):
+        raise ValueError("private_root must be absolute, non-root, and without '..'")
+    try:
+        relative = authority.relative_to(private)
+    except ValueError as exc:
+        raise ValueError("bundle_root must be inside private_root") from exc
+    if relative == Path("."):
+        raise ValueError("bundle_root must be a strict descendant of private_root")
+    return str(private)
+
+
+def _pure_mask_root(root: str | os.PathLike[str]) -> str:
+    path = Path(root)
+    if not path.is_absolute() or ".." in path.parts or path == Path(path.anchor):
+        raise ValueError("private mask roots must be absolute, non-root, and without '..'")
+    return str(path)
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
+    for child, parent in ((left, right), (right, left)):
+        try:
+            child.relative_to(parent)
+            return True
+        except ValueError:
+            pass
+    return False
+
+
+def _needs_private_mask(path: str) -> bool:
+    candidate = Path(path)
+    for masked in (Path("/tmp"), Path(RUNTIME_DIR)):
+        try:
+            candidate.relative_to(masked)
+            return False
+        except ValueError:
+            pass
+    try:
+        candidate.relative_to(USER_HOME)
+    except ValueError:
+        return True
+    # Blank home is enough unless one of the learner's later cache/tool binds
+    # overlaps the private root. Overlaps must be re-masked after those binds.
+    rebound = (*_COMMON_HOME_MOUNTS, *_LEARNER_HOME_MOUNTS)
+    return any(
+        mount.flag != "--tmpfs"
+        and _paths_overlap(candidate, Path(mount.target))
+        for mount in rebound
+    )
+
+
 def build_sandbox_argv(
     profile: SandboxProfile,
     bundle_dir: str | os.PathLike[str],
     *,
     bundle_root: str | os.PathLike[str],
+    private_root: str | os.PathLike[str] | None = None,
+    private_masks: Sequence[str | os.PathLike[str]] = (),
 ) -> list[str]:
     """Purely build the bubblewrap prefix for ``profile`` and ``bundle_dir``.
 
@@ -132,6 +196,14 @@ def build_sandbox_argv(
     if profile not in _PROFILES:
         raise ValueError(f"unknown sandbox profile: {profile}")
     bundle = _pure_bundle_path(bundle_dir, bundle_root)
+    private = (
+        _pure_private_root(private_root, bundle_root)
+        if private_root is not None else None
+    )
+    mask_roots = list(dict.fromkeys(
+        [*([private] if private is not None else []),
+         *(_pure_mask_root(root) for root in private_masks)]
+    ))
 
     argv = [BWRAP, "--unshare-all"]
     if profile == "lesson-agent":
@@ -144,6 +216,10 @@ def build_sandbox_argv(
         "--tmpfs", "/tmp",
         "--tmpfs", USER_HOME,
     ])
+    if profile == "lesson-learner":
+        # AF_UNIX sockets survive network namespace isolation. Replace the
+        # whole runtime tree; /var/run resolves into this mount as well.
+        argv.extend(["--tmpfs", RUNTIME_DIR])
 
     mounts = list(_COMMON_HOME_MOUNTS)
     if profile == "lesson-agent":
@@ -152,6 +228,13 @@ def build_sandbox_argv(
         mounts.extend(_LEARNER_HOME_MOUNTS)
     for mount in mounts:
         argv.extend(mount.argv())
+
+    if profile == "lesson-learner":
+        # Apply private masks after learner cache/tool re-binds so a private
+        # instance nested below one of those paths cannot be reopened by them.
+        for root in mask_roots:
+            if _needs_private_mask(root):
+                argv.extend(["--tmpfs", root])
 
     if profile == "lesson-runner":
         argv.extend([
@@ -244,6 +327,8 @@ async def spawn_sandboxed(
     command: Sequence[str],
     *,
     bundle_root: str | os.PathLike[str],
+    private_root: str | os.PathLike[str] | None = None,
+    private_masks: Sequence[str | os.PathLike[str]] = (),
     stdin: int | None = None,
     stdout: int | None = None,
     stderr: int | None = None,
@@ -255,7 +340,9 @@ async def spawn_sandboxed(
         raise ValueError("sandbox command must not be empty")
     require_sandbox_runtime()
     argv = build_sandbox_argv(
-        profile, bundle_dir, bundle_root=bundle_root
+        profile, bundle_dir, bundle_root=bundle_root,
+        private_root=private_root,
+        private_masks=private_masks,
     ) + ["--", *command]
     try:
         return await asyncio.create_subprocess_exec(
