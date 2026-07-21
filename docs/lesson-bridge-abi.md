@@ -159,6 +159,10 @@ parent → child   { "op": "attempt", "request_id": "a1",
   `unknown-question`, without spending a server write). The server then
   re-validates the record-time manifest and derives `stale` again —
   the L1 `WindowProxy` residuals mean port possession is never authority.
+- The displayed document is byte-bound too: the parent navigates the frame
+  with `?v=<version token>` and the file route refuses snapshot bytes that
+  no longer hash to that token (409 + self-reload), so the learner is never
+  shown a revision the armed `page_rev` does not describe.
 - Refusal codes: the endpoint's codes verbatim (`unknown-question`,
   `answer-too-large`, `rate-limited`, `idempotency-conflict`, …), plus the
   parent-local `capability-not-granted`, `unsupported-version`,
@@ -168,6 +172,19 @@ parent → child   { "op": "attempt", "request_id": "a1",
 - Concurrency: one outcome per in-flight `request_id` (a duplicate op while
   the original is pending is dropped — the pending call answers), at most 4
   in flight per document; beyond that, `busy`.
+- Known residual (§4's L1 windows, restated for writes): the browser has no
+  document-generation token, so a successor document that runs before its
+  own `load` event — reachable only by the granted lesson document
+  navigating itself — can hold the port inside that window. The parent's
+  settle delay (~250 ms between validation and the HTTP call) closes every
+  case where the successor's load completes in time: the load tears down
+  port and generation first and the write is refused. What remains is a
+  successor that deliberately stalls its own load — content chosen by the
+  very document that owned the grant, which could have submitted the same
+  attempt without navigating at all; it still records only questions the
+  manifest declares, against the on-disk revision the server re-hashes at
+  record time. Port possession buys nothing the armed page did not already
+  have.
 - Confirmation UX is parent-owned: a recorded attempt raises the app's
   toast ("attempt #N recorded"); there is no modal, and the child receives
   only the structured reply above.

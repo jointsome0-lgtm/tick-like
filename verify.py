@@ -1705,6 +1705,23 @@ with TestClient(app) as c:
     check("bundle_resource_info returns the one-descriptor snapshot for v2 pages",
           _d5_info["content"] == _d5_file.content
           and _d5_info["version"] == _d5_meta["version"])
+    # serve-time version binding (PR-60 round 1): the parent navigates with
+    # ?v=<token>; matching bytes serve, a mismatched token is refused with
+    # the self-reloading 409 instead of showing bytes the armed page_rev
+    # does not describe
+    _d5_vok = c.get(f"/learn/lessons/{_at_id}/files/index.html",
+                    params={"v": _d5_meta["version"]})
+    _d5_vbad = c.get(f"/learn/lessons/{_at_id}/files/index.html",
+                     params={"v": "1:interactive-local-v1:deadbeefdeadbeef"})
+    check("?v binding: matching token serves, mismatched token is a 409 reload",
+          _d5_vok.status_code == 200 and _d5_vok.content == _d5_file.content
+          and _d5_vbad.status_code == 409
+          and "location.reload" in _d5_vbad.text
+          and _d5_vbad.headers.get("x-lesson-preview-version") == _d5_meta["version"])
+    from urllib.parse import quote as _d5_quote
+    check("learn.html initial iframe src carries the ?v binding",
+          f'?v={_d5_quote(_d5_meta["version"], safe="")}'
+          in c.get(f"/learn?lesson={_at_id}").text.replace("&amp;", "&"))
     # an asset (undeclared as a page) streams as before: no snapshot, no
     # content-bound token
     (_at_dir / "assets").mkdir(exist_ok=True)
@@ -1751,6 +1768,7 @@ with TestClient(app) as c:
               and '"stale-page"' in _d5_text
               and '"capability-not-granted"' in _d5_text
               and "MAX_ATTEMPTS_INFLIGHT" in _d5_text
+              and "ATTEMPT_SETTLE_MS" in _d5_text
               and "attempt #" in _d5_text)
     check("parent runtime re-validates per operation against fresh metadata",
           "metaQuestions" in _d2_ts

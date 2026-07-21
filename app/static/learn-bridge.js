@@ -50,6 +50,13 @@ const POLL_MS = 1200;
 /** Attempt operations in flight at once per document; beyond it the op is
  * answered `busy` (a Check press is human-scale — this only stops a loop). */
 const MAX_ATTEMPTS_INFLIGHT = 4;
+/** Settle delay before the attempt HTTP call (PR-60 round 1, D2 L1): a
+ * self-navigation whose successor completes its load within this window
+ * tears the port and generation down BEFORE the write is sent, so the
+ * navigation-gap residual shrinks to a successor that deliberately stalls
+ * its own load — same-trust content chosen by the granted document itself
+ * (ABI §3.1). Human-scale Check presses don't notice a quarter second. */
+const ATTEMPT_SETTLE_MS = 250;
 /** The op-envelope version the attempt operation speaks (independent of the
  * handshake ABI so the submission shape can evolve additively). */
 const ATTEMPT_OP_VERSION = 1;
@@ -153,6 +160,10 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
             || (meta.exists ? frame.dataset["src"] : fallbackSrc)
             || fallbackSrc;
         const url = new URL(src, window.location.href);
+        /* Serve-time version binding (PR-60 round 1): the file route refuses a
+         * snapshot whose token no longer equals this value, so the document the
+         * learner sees is byte-bound to the token this runtime arms. */
+        url.searchParams.set("v", expectedVersion);
         url.searchParams.set("_v", String(Date.now()));
         expectedSrc = url.toString();
         reasserts = 0;
@@ -332,6 +343,13 @@ if (frame && frame.dataset["metaUrl"] && frame.getAttribute("src")) {
                 return answerError(boundPort, "unavailable", requestId);
             if (!declared.includes(questionId)) {
                 return answerError(boundPort, "unknown-question", requestId);
+            }
+            /* Settle delay, then re-check the document state: an iframe `load`
+             * firing in this window (a self-navigation completing) bumps the
+             * generation and closes the port, and the write below never leaves. */
+            await new Promise((resolve) => setTimeout(resolve, ATTEMPT_SETTLE_MS));
+            if (gen !== generation || port !== boundPort || navPending || quarantined) {
+                return answerError(boundPort, "stale-page", requestId);
             }
             let body;
             try {

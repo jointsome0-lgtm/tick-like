@@ -134,7 +134,10 @@
           id="lesson-preview-frame"
           class="lesson-frame"
           title="{{ selected.title }}"
-          src="{{ selected.preview_url }}"
+          {# the served-page version binding (?v=) holds from the FIRST
+             navigation: the file route refuses snapshot bytes that no longer
+             hash to this token, and it is the token the bridge runtime arms #}
+          src="{{ selected.preview_url }}{% if selected.file.exists %}?v={{ selected.file.version | urlencode }}{% endif %}"
           data-src="{{ selected.file_url }}"
           data-meta-url="{{ selected.preview_meta_url }}"
           data-attempts-url="/learn/lessons/{{ selected.id }}/attempts"

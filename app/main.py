@@ -1214,8 +1214,16 @@ def _lesson_or_404(conn, lesson_id: int) -> dict:
     return lesson
 
 
+_STALE_SNAPSHOT_HTML = """<!doctype html>
+<html><head><meta charset="utf-8"><title>Reloading…</title></head><body>
+<p>This page changed while it was loading; fetching the current version…</p>
+<script>setTimeout(function () { location.reload(); }, 600);</script>
+</body></html>
+"""
+
+
 @app.get("/learn/lessons/{lesson_id}/files/{resource:path}")
-def get_lesson_bundle_file(lesson_id: int, resource: str):
+def get_lesson_bundle_file(lesson_id: int, resource: str, v: str | None = None):
     conn = get_conn()
     try:
         lesson = _lesson_or_404(conn, lesson_id)
@@ -1238,6 +1246,20 @@ def get_lesson_bundle_file(lesson_id: int, resource: str):
         # Declared v2 page: byte-bound snapshot (drain D2 L2) — the body IS
         # the bytes the version token's digest describes; FileResponse would
         # re-open the path and could serve a racing replacement instead.
+        if v is not None and v != info["version"]:
+            # Serve-time version binding (PR-60 round 1): the parent
+            # navigates with the token it is going to arm; bytes that no
+            # longer produce that token are refused, so the learner is
+            # never SHOWN a revision the armed page_rev does not describe.
+            # The transient swap-restore case self-heals on the reload
+            # below; a real edit moves the metadata token and the parent
+            # re-navigates with it.
+            return Response(
+                content=_STALE_SNAPSHOT_HTML,
+                status_code=409,
+                media_type="text/html; charset=utf-8",
+                headers=headers,
+            )
         return Response(
             content=info["content"], media_type=info["media_type"], headers=headers
         )

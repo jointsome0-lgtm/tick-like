@@ -246,9 +246,16 @@ def _hash_regular_no_follow(path: Path) -> tuple[str, os.stat_result] | None:
         if cached is not None and cached[0] == _digest_key(st):
             return cached[1], st
         digest = hashlib.sha256()
+        total = 0
         with os.fdopen(fd, "rb") as fh:
             fd = -1
             for chunk in iter(lambda: fh.read(1 << 16), b""):
+                total += len(chunk)
+                if total > PAGE_IDENTITY_MAX_BYTES:
+                    # grew past the bound while we read (PR-60 round 1): the
+                    # open-time check alone would hash — and grant identity
+                    # to — an oversized file; abort instead
+                    return None
                 digest.update(chunk)
             st_after = os.fstat(fh.fileno())
         if _digest_key(st_after) == _digest_key(st):
@@ -277,14 +284,19 @@ def _read_page_snapshot(path: Path) -> tuple[bytes, str, os.stat_result] | None:
         if not stat_module.S_ISREG(st.st_mode) or st.st_size > PAGE_IDENTITY_MAX_BYTES:
             return None
         chunks = []
+        total = 0
         with os.fdopen(fd, "rb") as fh:
             fd = -1
             for chunk in iter(lambda: fh.read(1 << 16), b""):
+                total += len(chunk)
+                if total > PAGE_IDENTITY_MAX_BYTES:
+                    # abort as soon as the bound is crossed (PR-60 round 1):
+                    # never buffer more than the supported page size, even
+                    # against a file growing under the read
+                    return None
                 chunks.append(chunk)
             st_after = os.fstat(fh.fileno())
         data = b"".join(chunks)
-        if len(data) > PAGE_IDENTITY_MAX_BYTES:  # grew past the bound mid-read
-            return None
         digest = hashlib.sha256(data).hexdigest()
         if _digest_key(st_after) == _digest_key(st):
             _cache_page_digest(path, _digest_key(st_after), digest)
