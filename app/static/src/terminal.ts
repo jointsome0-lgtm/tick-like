@@ -17,6 +17,7 @@ interface TerminalTab {
   id: string;
   sid: string | null;
   lesson: string | null;
+  role: "plain" | "lesson-agent" | "lesson-learner" | null;
   title: string;
   term: any | null;
   fit: any | null;
@@ -30,41 +31,79 @@ interface TerminalTab {
   sentCols: number;
 }
 
+interface SurfaceConfig {
+  kind: "agent" | "learner";
+  idPrefix: "term" | "learner-term";
+  toggleId: "term-toggle" | "lesson-learner-term-btn";
+  lessonButtonId: "lesson-term-btn" | null;
+  currentLesson: string | null;
+  currentLessonTitle: string | null;
+  restoreOpen: boolean;
+  keyboardShortcuts: boolean;
+}
+
 // Desktop / localhost-only terminal drawer (GCP Cloud Shell style) — the client
 // half of app/terminal.py. Loaded by base.html only for local clients; the markup
 // (#term-drawer) is gated server-side the same way, and the websocket itself
 // re-verifies the peer, so this file being world-readable under /static is fine.
 (function () {
-  var drawer = document.getElementById('term-drawer') as HTMLElement;
-  var toggle = document.getElementById('term-toggle') as HTMLElement;
+  function syncTerminalInsets(): void {
+    var agent = document.getElementById('term-drawer') as HTMLElement | null;
+    var learner = document.getElementById('learner-term-drawer') as HTMLElement | null;
+    var agentOpen = !!agent && !agent.hidden;
+    var learnerOpen = !!learner && !learner.hidden;
+    var agentRight = agentOpen && agent!.classList.contains('right-dock');
+    var bottomHeight = (agentOpen && !agentRight ? agent!.offsetHeight : 0)
+      + (learnerOpen ? learner!.offsetHeight : 0);
+
+    document.body.classList.toggle('term-open', agentOpen || learnerOpen);
+    document.body.classList.toggle('term-right-open', agentRight);
+    document.body.classList.toggle('learner-term-open', learnerOpen);
+    if (bottomHeight) document.body.style.setProperty('--term-h', bottomHeight + 'px');
+    else document.body.style.removeProperty('--term-h');
+    if (agentRight) document.body.style.setProperty('--term-w', agent!.offsetWidth + 'px');
+    else document.body.style.removeProperty('--term-w');
+    if (learnerOpen) {
+      document.body.style.setProperty('--term-learner-h', learner!.offsetHeight + 'px');
+    } else {
+      document.body.style.removeProperty('--term-learner-h');
+    }
+  }
+
+  function initSurface(config: SurfaceConfig): void {
+  var drawer = document.getElementById(config.idPrefix + '-drawer') as HTMLElement;
+  var toggle = document.getElementById(config.toggleId) as HTMLElement;
   if (!drawer || !toggle) return;
 
-  var CSS = drawer.dataset.xtermCss!, XJS = drawer.dataset.xtermJs!, FJS = drawer.dataset.fitJs!;
-  var WGLJS = drawer.dataset.webglJs!, WLJS = drawer.dataset.webLinksJs!;
-  var U11JS = drawer.dataset.unicode11Js!, SJS = drawer.dataset.searchJs!, CJS = drawer.dataset.clipboardJs!;
-  var OPEN_KEY = 'al-term-open';
+  var assetHost = document.getElementById('term-drawer') as HTMLElement;
+  var CSS = assetHost.dataset.xtermCss!, XJS = assetHost.dataset.xtermJs!, FJS = assetHost.dataset.fitJs!;
+  var WGLJS = assetHost.dataset.webglJs!, WLJS = assetHost.dataset.webLinksJs!;
+  var U11JS = assetHost.dataset.unicode11Js!, SJS = assetHost.dataset.searchJs!, CJS = assetHost.dataset.clipboardJs!;
+  var keyStem = config.kind === 'agent' ? 'al-term-' : 'al-term-learner-';
+  var OPEN_KEY = keyStem + 'open';
   var LEGACY_SID_KEY = 'al-term-sid';
-  var TABS_KEY = 'al-term-tabs';
-  var ACTIVE_KEY = 'al-term-active';
-  var H_KEY = 'al-term-h';
-  var W_KEY = 'al-term-w';
-  var MIN_KEY = 'al-term-min';
-  var COPY_SELECT_KEY = 'al-term-copyselect';
+  var TABS_KEY = keyStem + 'tabs';
+  var ACTIVE_KEY = keyStem + 'active';
+  var H_KEY = keyStem + 'h';
+  var W_KEY = keyStem + 'w';
+  var MIN_KEY = keyStem + 'min';
+  var COPY_SELECT_KEY = keyStem + 'copyselect';
   var MAX_TABS = 8;
 
-  var statusEl = document.getElementById('term-status');
-  var dotEl = document.getElementById('term-dot');
-  var screenHost = document.getElementById('term-screens') as HTMLElement;
-  var tabsEl = document.getElementById('term-tabs');
-  var newBtn = document.getElementById('term-new') as HTMLButtonElement | null;
-  var findEl = document.getElementById('term-find');
-  var findInput = document.getElementById('term-find-input') as HTMLInputElement | null;
-  var findPrevBtn = document.getElementById('term-find-prev');
-  var findNextBtn = document.getElementById('term-find-next');
-  var findCloseBtn = document.getElementById('term-find-close');
+  var statusEl = document.getElementById(config.idPrefix + '-status');
+  var dotEl = document.getElementById(config.idPrefix + '-dot');
+  var screenHost = document.getElementById(config.idPrefix + '-screens') as HTMLElement;
+  var tabsEl = document.getElementById(config.idPrefix + '-tabs');
+  var newBtn = document.getElementById(config.idPrefix + '-new') as HTMLButtonElement | null;
+  var findEl = document.getElementById(config.idPrefix + '-find');
+  var findInput = document.getElementById(config.idPrefix + '-find-input') as HTMLInputElement | null;
+  var findPrevBtn = document.getElementById(config.idPrefix + '-find-prev');
+  var findNextBtn = document.getElementById(config.idPrefix + '-find-next');
+  var findCloseBtn = document.getElementById(config.idPrefix + '-find-close');
   var enc = new TextEncoder();
   var loaded: Promise<void> | null = null;
   var tabs: TerminalTab[] = [];
+  var allTabs: TerminalTab[] = [];
   // Two pointers: activeId is the effective in-memory active tab; storedActiveId
   // is the durable one — the only value persistTabs() ever writes. The off-Learn
   // lesson-tab fallback changes activeId alone, so incidental persists (title
@@ -105,27 +144,32 @@ interface TerminalTab {
   function readStoredTabs() {
     var raw: any = null;
     try { raw = JSON.parse(localStorage.getItem(TABS_KEY) || 'null'); } catch (_) {}
-    if (!Array.isArray(raw) || raw.length === 0) {
+    if (config.kind === 'agent' && (!Array.isArray(raw) || raw.length === 0)) {
       var legacy = localStorage.getItem(LEGACY_SID_KEY);
       if (legacy) raw = [{ id: newId(), sid: legacy, title: 'Terminal 1' }];
     }
-    tabs = (Array.isArray(raw) ? raw : []).slice(0, MAX_TABS).map(function (t: any, i: number): TerminalTab {
+    allTabs = (Array.isArray(raw) ? raw : []).slice(0, config.kind === 'agent' ? MAX_TABS : 64).map(function (t: any, i: number): TerminalTab {
       return {
         id: cleanTitle(t.id, newId()),
         sid: t.sid ? String(t.sid) : null,
         lesson: t.lesson ? String(t.lesson).slice(0, 80) : null,
         title: cleanTitle(t.title, 'Terminal ' + (i + 1)),
+        role: null,
         term: null, fit: null, search: null, clipboard: null, webgl: null, ws: null, screen: null, ro: null,
         sentRows: 0, sentCols: 0
       };
     });
+    tabs = config.kind === 'learner'
+      ? allTabs.filter(function (t) { return t.lesson === config.currentLesson; }).slice(0, MAX_TABS)
+      : allTabs;
     storedActiveId = localStorage.getItem(ACTIVE_KEY);
-    if (!tabs.some(function (t) { return t.id === storedActiveId; })) {
+    if (config.kind === 'agent' && !tabs.some(function (t) { return t.id === storedActiveId; })) {
       storedActiveId = tabs[0] ? tabs[0].id : null;
     }
-    activeId = storedActiveId;
-    if (tabs.length) persistTabs();
-    localStorage.removeItem(LEGACY_SID_KEY);
+    activeId = tabs.some(function (t) { return t.id === storedActiveId; })
+      ? storedActiveId : (tabs[0] ? tabs[0].id : null);
+    if (allTabs.length) persistTabs();
+    if (config.kind === 'agent') localStorage.removeItem(LEGACY_SID_KEY);
     // A lesson tab must not be auto-active outside Learn: fall back to the
     // first plain tab (creating one in memory if every stored tab is a lesson
     // tab). Only the active *pointer* is transient — storedActiveId still names
@@ -138,6 +182,7 @@ interface TerminalTab {
       if (!plain && tabs.length < MAX_TABS) {
         plain = {
           id: newId(), sid: null, lesson: null, title: 'Terminal ' + (tabs.length + 1),
+          role: null,
           term: null, fit: null, search: null, clipboard: null, webgl: null, ws: null, screen: null, ro: null,
           sentRows: 0, sentCols: 0
         };
@@ -148,7 +193,12 @@ interface TerminalTab {
   }
 
   function persistTabs() {
-    localStorage.setItem(TABS_KEY, JSON.stringify(tabs.map(function (t) {
+    if (config.kind === 'learner') {
+      allTabs = allTabs.filter(function (t) { return t.lesson !== config.currentLesson; }).concat(tabs);
+    } else {
+      allTabs = tabs;
+    }
+    localStorage.setItem(TABS_KEY, JSON.stringify(allTabs.map(function (t) {
       return { id: t.id, sid: t.sid, lesson: t.lesson || null, title: t.title };
     })));
     if (storedActiveId) localStorage.setItem(ACTIVE_KEY, storedActiveId);
@@ -162,7 +212,11 @@ interface TerminalTab {
   function ensureDefaultTab() {
     if (tabs.length) return;
     tabs.push({
-      id: newId(), sid: null, lesson: null, title: 'Terminal 1',
+      id: newId(), sid: null,
+      lesson: config.kind === 'learner' ? config.currentLesson : null,
+      title: config.kind === 'learner'
+        ? cleanTitle(config.currentLessonTitle, 'Learner 1') : 'Terminal 1',
+      role: null,
       term: null, fit: null, search: null, clipboard: null, webgl: null, ws: null, screen: null, ro: null,
       sentRows: 0, sentCols: 0
     });
@@ -414,11 +468,14 @@ interface TerminalTab {
   function connectTab(tab: TerminalTab) {
     if (tab.ws && (tab.ws.readyState === 0 || tab.ws.readyState === 1)) return;
     var proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    // Send both: sid reattaches; lesson only matters when the server has to create
-    // a session (first connect, or healing a reaped sid back into the lesson dir).
+    var attaching = !!tab.sid;
+    var receivedSession = false;
+    // A role selector is creation-only: learner reattach sends SID (and the
+    // inert lesson context) but never combines SID with role, which E3 refuses.
     var qs = [];
     if (tab.sid) qs.push('sid=' + encodeURIComponent(tab.sid));
     if (tab.lesson) qs.push('lesson=' + encodeURIComponent(tab.lesson));
+    if (!tab.sid && config.kind === 'learner') qs.push('role=lesson-learner');
     var url = proto + '://' + location.host + '/terminal/ws' + (qs.length ? '?' + qs.join('&') : '');
     tab.ws = new WebSocket(url);
     tab.ws.binaryType = 'arraybuffer';
@@ -431,9 +488,27 @@ interface TerminalTab {
     tab.ws.onmessage = function (e: MessageEvent) {
       if (typeof e.data === 'string') {
         try {
-          var m = JSON.parse(e.data);
-          if (m && m.type === 'session' && m.sid) {
-            tab.sid = m.sid;
+          var m: unknown = JSON.parse(e.data);
+          if (typeof m === 'object' && m !== null
+              && (m as any).type === 'session'
+              && typeof (m as any).sid === 'string'
+              && ((m as any).role === 'plain'
+                  || (m as any).role === 'lesson-agent'
+                  || (m as any).role === 'lesson-learner')) {
+            var role = (m as any).role as TerminalTab['role'];
+            var roleFitsSurface = config.kind === 'learner'
+              ? role === 'lesson-learner' : role !== 'lesson-learner';
+            if (!roleFitsSurface) {
+              fail('[terminal: server role does not match this surface]');
+              tab.sid = null;
+              tab.role = null;
+              persistTabs();
+              tab.ws?.close();
+              return;
+            }
+            receivedSession = true;
+            tab.sid = (m as any).sid;
+            tab.role = role;
             persistTabs();
           }
         } catch (_) {}
@@ -443,12 +518,28 @@ interface TerminalTab {
     };
     tab.ws.onclose = function () {
       if (tab.ws && tab.ws.readyState >= 2) tab.ws = null;
+      // E3 refuses stale learner SID healing without an explicit role. Clear
+      // only after a failed attach; the next deliberate click can create a new
+      // learner session with the selector instead of looping on the stale SID.
+      if (config.kind === 'learner' && attaching && !receivedSession) {
+        tab.sid = null;
+        tab.role = null;
+        persistTabs();
+      }
       updateActiveDot();
     };
     tab.ws.onerror = function () { fail('WebSocket error — the terminal is localhost-only.'); };
   }
 
   function connectAllTabs() {
+    if (config.kind === 'learner') {
+      var active = activeTab();
+      if (active) {
+        ensureRuntime(active);
+        connectTab(active);
+      }
+      return;
+    }
     tabs.forEach(function (tab) {
       // Lesson tabs stay visible everywhere but only auto-connect on Learn;
       // elsewhere an explicit click still connects them via switchTab().
@@ -486,29 +577,13 @@ interface TerminalTab {
   }
 
   function isDesktopRightDock() {
-    return document.body.dataset.rail === 'learn' &&
+    return config.kind === 'agent' && document.body.dataset.rail === 'learn' &&
       window.matchMedia &&
       window.matchMedia('(min-width: 861px)').matches;
   }
 
   function syncInset() {
-    if (drawer.hidden) {
-      document.body.classList.remove('term-open', 'term-right-open');
-      document.body.style.removeProperty('--term-h');
-      document.body.style.removeProperty('--term-w');
-      return;
-    }
-    var right = isDesktopRightDock();
-    document.body.classList.add('term-open');
-    document.body.classList.toggle('term-right-open', right);
-    if (right) {
-      document.body.style.removeProperty('--term-h');
-      document.body.style.setProperty('--term-w', drawer.offsetWidth + 'px');
-    } else {
-      document.body.classList.remove('term-right-open');
-      document.body.style.removeProperty('--term-w');
-      document.body.style.setProperty('--term-h', drawer.offsetHeight + 'px');
-    }
+    syncTerminalInsets();
   }
 
   function applyDock() {
@@ -574,8 +649,11 @@ interface TerminalTab {
       fail('[terminal: maximum 8 sessions]');
       return;
     }
-    var tab = {
-      id: newId(), sid: null, lesson: null, title: 'Terminal ' + (tabs.length + 1),
+    var tab: TerminalTab = {
+      id: newId(), sid: null,
+      lesson: config.kind === 'learner' ? config.currentLesson : null,
+      title: (config.kind === 'learner' ? 'Learner ' : 'Terminal ') + (tabs.length + 1),
+      role: null,
       term: null, fit: null, search: null, clipboard: null, webgl: null, ws: null, screen: null, ro: null,
       sentRows: 0, sentCols: 0
     };
@@ -599,6 +677,7 @@ interface TerminalTab {
       }
       tab = {
         id: newId(), sid: null, lesson: slug, title: cleanTitle(title, slug),
+        role: null,
         term: null, fit: null, search: null, clipboard: null, webgl: null, ws: null, screen: null, ro: null,
         sentRows: 0, sentCols: 0
       };
@@ -734,7 +813,8 @@ interface TerminalTab {
 
   toggle.addEventListener('click', function () { drawer.hidden ? open() : hide(); });
   if (newBtn) newBtn.addEventListener('click', createTab);
-  var lessonBtn = document.getElementById('lesson-term-btn');
+  var lessonBtn = config.lessonButtonId
+    ? document.getElementById(config.lessonButtonId) : null;
   if (lessonBtn) {
     lessonBtn.addEventListener('click', function () {
       openLessonTab(lessonBtn!.dataset.lesson, lessonBtn!.dataset.lessonTitle);
@@ -743,14 +823,14 @@ interface TerminalTab {
   if (findPrevBtn) findPrevBtn.addEventListener('click', function () { runSearch(false); });
   if (findNextBtn) findNextBtn.addEventListener('click', function () { runSearch(true); });
   if (findCloseBtn) findCloseBtn.addEventListener('click', function () { closeFind(true); });
-  var killBtn = document.getElementById('term-close');
+  var killBtn = document.getElementById(config.idPrefix + '-close');
   if (killBtn) killBtn.addEventListener('click', closeActiveTab);
-  var minBtn = document.getElementById('term-min');
+  var minBtn = document.getElementById(config.idPrefix + '-min');
   if (minBtn) minBtn.addEventListener('click', function () {
     setMinimized(!drawer.classList.contains('minimized'));
   });
 
-  var handle = document.getElementById('term-resize');
+  var handle = document.getElementById(config.idPrefix + '-resize');
   if (handle) {
     var onDrag = function (e: MouseEvent) {
       if (isDesktopRightDock()) setDrawerSize(window.innerWidth - e.clientX);
@@ -792,6 +872,7 @@ interface TerminalTab {
         return;
       }
     }
+    if (!config.keyboardShortcuts) return;
     if (e.ctrlKey && !e.altKey && !e.metaKey && e.key === '`') {
       e.preventDefault();
       drawer.hidden ? open() : hide();
@@ -827,5 +908,22 @@ interface TerminalTab {
 
   readStoredTabs();
   renderTabs();
-  if (localStorage.getItem(OPEN_KEY) === '1') open();
+  if (config.restoreOpen && localStorage.getItem(OPEN_KEY) === '1') open();
+  }
+
+  var learnerToggle = document.getElementById('lesson-learner-term-btn');
+  initSurface({
+    kind: 'agent', idPrefix: 'term', toggleId: 'term-toggle',
+    lessonButtonId: 'lesson-term-btn', currentLesson: null,
+    currentLessonTitle: null, restoreOpen: true, keyboardShortcuts: true
+  });
+  if (learnerToggle) {
+    initSurface({
+      kind: 'learner', idPrefix: 'learner-term',
+      toggleId: 'lesson-learner-term-btn', lessonButtonId: null,
+      currentLesson: learnerToggle.dataset.lesson || null,
+      currentLessonTitle: learnerToggle.dataset.lessonTitle || null,
+      restoreOpen: false, keyboardShortcuts: false
+    });
+  }
 })();

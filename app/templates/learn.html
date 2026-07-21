@@ -120,8 +120,12 @@
           {% if client_is_local(request) %}
           <button type="button" class="icon-btn" id="lesson-term-btn"
                   data-lesson="{{ selected.slug }}" data-lesson-title="{{ selected.title }}"
-                  title="Terminal in this lesson's folder — local only"
-                  aria-label="Open terminal in this lesson's folder">{{ ic.icon('terminal') }}</button>
+                  title="Agent terminal in this lesson's folder — local only"
+                  aria-label="Open agent terminal in this lesson's folder">{{ ic.icon('terminal') }}</button>
+          <button type="button" class="btn-text learner-term-toggle" id="lesson-learner-term-btn"
+                  data-lesson="{{ selected.slug }}" data-lesson-title="{{ selected.title }}"
+                  title="Learner terminal in this lesson's folder — local only"
+                  aria-label="Open learner terminal in this lesson's folder">Learner terminal</button>
           {% endif %}
           <span class="lesson-file-state">{{ selected.file.label }} · {{ 'HTML' if selected.file.exists else 'No file' }}</span>
         </div>
@@ -165,6 +169,30 @@
 {# Learn-only preview runtime: live-reload poll + lesson bridge parent (D2).
    ES module (tsc emit, issue #42) — module scripts are deferred. #}
 <script type="module" src="{{ static_url('learn-bridge.js') }}"></script>
+{% endblock %}
+
+{% block learner_terminal %}
+{% if selected and client_is_local(request) %}
+<div id="learner-term-drawer" class="term-drawer learner-drawer" hidden aria-hidden="true">
+  <div class="term-resize" id="learner-term-resize" title="Drag to resize"></div>
+  <div class="term-head">
+    <span class="term-dot" id="learner-term-dot"></span>
+    <div class="term-tabs" id="learner-term-tabs" role="tablist" aria-label="Learner terminal tabs"></div>
+    <div class="term-find" id="learner-term-find" role="search" aria-label="Find in learner terminal" hidden>
+      <input type="search" class="term-find-input" id="learner-term-find-input" aria-label="Find in learner terminal" placeholder="Find" autocomplete="off" spellcheck="false">
+      <button type="button" class="term-btn" id="learner-term-find-prev" title="Previous result" aria-label="Previous result">{{ ic.icon('chev-left') }}</button>
+      <button type="button" class="term-btn" id="learner-term-find-next" title="Next result" aria-label="Next result">{{ ic.icon('chev-right') }}</button>
+      <button type="button" class="term-btn" id="learner-term-find-close" title="Close find" aria-label="Close find">{{ ic.icon('close') }}</button>
+    </div>
+    <button type="button" class="term-btn term-new" id="learner-term-new" title="New learner terminal" aria-label="New learner terminal">{{ ic.icon('plus') }}</button>
+    <span class="term-meta">learner · offline sandbox</span>
+    <button type="button" class="term-btn" id="learner-term-min" title="Minimize" aria-label="Minimize learner terminal">–</button>
+    <button type="button" class="term-btn term-close" id="learner-term-close" title="Close active learner terminal" aria-label="Close active learner terminal">{{ ic.icon('close') }}</button>
+  </div>
+  <div id="learner-term-screens" class="term-screens"></div>
+  <div id="learner-term-status" class="term-status" hidden></div>
+</div>
+{% endif %}
 {% endblock %}
 
 {% block detail %}{% endblock %}

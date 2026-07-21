@@ -222,13 +222,14 @@ with TestClient(app) as c:
           and "data-unicode11-js=\"{{ static_url('vendor/xterm-addon-unicode11.min.js') }}\"" in base_html
           and "data-search-js=\"{{ static_url('vendor/xterm-addon-search.min.js') }}\"" in base_html
           and "data-clipboard-js=\"{{ static_url('vendor/xterm-addon-clipboard.min.js') }}\"" in base_html)
+    terminal_ts = (ROOT / "app" / "static" / "src" / "terminal.ts").read_text(encoding="utf-8")
     terminal_js = (ROOT / "app" / "static" / "terminal.js").read_text(encoding="utf-8")
     check("terminal.js lazy-loads the official xterm addons",
-          "drawer.dataset.webglJs" in terminal_js
-          and "drawer.dataset.webLinksJs" in terminal_js
-          and "drawer.dataset.unicode11Js" in terminal_js
-          and "drawer.dataset.searchJs" in terminal_js
-          and "drawer.dataset.clipboardJs" in terminal_js
+          "assetHost.dataset.webglJs" in terminal_js
+          and "assetHost.dataset.webLinksJs" in terminal_js
+          and "assetHost.dataset.unicode11Js" in terminal_js
+          and "assetHost.dataset.searchJs" in terminal_js
+          and "assetHost.dataset.clipboardJs" in terminal_js
           and "window.ClipboardAddon" in terminal_js
           and "var scripts = [XJS, FJS, WLJS, U11JS, SJS, CJS, WGLJS]" in terminal_js)
     check("terminal.js wires xterm addon behavior",
@@ -244,7 +245,7 @@ with TestClient(app) as c:
           and "clip.writeText(String(text))" in terminal_js
           and "clip.readText()" in terminal_js
           and "term.paste(text)" in terminal_js
-          and "COPY_SELECT_KEY = 'al-term-copyselect'" in terminal_js
+          and "COPY_SELECT_KEY = keyStem + 'copyselect'" in terminal_js
           and "term.onSelectionChange" in terminal_js
           and "new ClipboardAddon.ClipboardAddon(" in terminal_js
           and "new ClipboardAddon.Base64()" in terminal_js
@@ -261,6 +262,30 @@ with TestClient(app) as c:
           and 'id="term-find-prev"' in base_html
           and 'id="term-find-next"' in base_html
           and 'id="term-find-close"' in base_html)
+    check("terminal.ts owns two independently namespaced surfaces",
+          "kind: 'agent'" in terminal_ts
+          and "kind: 'learner'" in terminal_ts
+          and "'al-term-' : 'al-term-learner-'" in terminal_ts
+          and "restoreOpen: false" in terminal_ts
+          and "allTabs.filter(function (t) { return t.lesson === config.currentLesson; })"
+          in terminal_ts)
+    check("learner surface is explicit-action and requests the E3 role only on create",
+          "if (!tab.sid && config.kind === 'learner') qs.push('role=lesson-learner')"
+          in terminal_ts
+          and "if (config.kind === 'learner') {\n      var active = activeTab();"
+          in terminal_ts
+          and "config.restoreOpen && localStorage.getItem(OPEN_KEY) === '1'"
+          in terminal_ts)
+    check("terminal role is accepted only from the server session message",
+          "var role = (m as any).role as TerminalTab['role']" in terminal_ts
+          and "tab.role = role" in terminal_ts
+          and "roleFitsSurface" in terminal_ts
+          and "role: config.kind" not in terminal_ts)
+    check("shared --term-h inset accounts for both terminal surfaces",
+          "function syncTerminalInsets" in terminal_ts
+          and "bottomHeight" in terminal_ts
+          and "--term-learner-h" in terminal_ts
+          and "body.learner-term-open .term-drawer.agent-drawer" in css.text)
 
     # --- Learn split: resizable / collapsible lesson list -----------------
     r = c.get("/learn")
@@ -377,6 +402,29 @@ with TestClient(app) as c:
     learn_tpl = (ROOT / "app" / "templates" / "learn.html").read_text(encoding="utf-8")
     check("learn.html offers the local-only lesson terminal button",
           'id="lesson-term-btn"' in learn_tpl and "client_is_local(request)" in learn_tpl)
+    # This Starlette TestClient reports a synthetic non-loopback peer. Exercise
+    # the local-only template branch explicitly, restoring the real predicate
+    # immediately after these two renders.
+    from app.main import templates as _e4_templates
+    _e4_local_predicate = _e4_templates.env.globals["client_is_local"]
+    try:
+        _e4_templates.env.globals["client_is_local"] = lambda request: True
+        _e4_unselected = c.get("/learn?status=studied").text
+        _e4_selected = c.get(f"/learn?lesson={_lt['id']}").text
+    finally:
+        _e4_templates.env.globals["client_is_local"] = _e4_local_predicate
+    check("learner drawer exists only with a selected local lesson",
+          'id="learner-term-drawer"' not in _e4_unselected
+          and 'id="lesson-learner-term-btn"' not in _e4_unselected
+          and 'id="learner-term-drawer"' in _e4_selected
+          and 'id="lesson-learner-term-btn"' in _e4_selected
+          and f'data-lesson="{_lt["slug"]}"' in _e4_selected)
+    check("learner drawer reuses terminal chrome as the bottom surface",
+          'class="term-drawer learner-drawer"' in learn_tpl
+          and 'id="learner-term-tabs"' in learn_tpl
+          and 'id="learner-term-screens"' in learn_tpl
+          and 'id="learner-term-new"' in learn_tpl
+          and 'id="learner-term-min"' in learn_tpl)
 
     # Fail-closed lesson sessions, allowlisted child env, redacted proxy banner.
     import asyncio as _asyncio
@@ -1105,8 +1153,10 @@ with TestClient(app) as c:
               and 'msg["ephemeris"] !== "lesson-bridge"' in _d2_text
               and 'want.includes("attempts")' in _d2_text
               and "MAX_PORT_CHARS = 64 * 1024" in _d2_text)
-    check(".gitattributes marks the emitted runtime as generated",
+    check(".gitattributes marks both emitted runtimes as generated",
           "app/static/learn-bridge.js linguist-generated=true"
+          in (ROOT / ".gitattributes").read_text(encoding="utf-8")
+          and "app/static/terminal.js linguist-generated=true"
           in (ROOT / ".gitattributes").read_text(encoding="utf-8"))
     # committed emit freshness: recompile to a scratch dir and byte-compare.
     # Runs only where the dev toolchain is installed (node_modules is not
@@ -1120,6 +1170,11 @@ with TestClient(app) as c:
         check("committed learn-bridge.js matches a fresh tsc emit (#42)",
               _d2_cp.returncode == 0
               and (_d2_out / "learn-bridge.js").read_bytes() == _d2_js.encode("utf-8"),
+              extra=_d2_cp.stdout + _d2_cp.stderr)
+        check("committed terminal.js matches a fresh tsc emit (#42)",
+              _d2_cp.returncode == 0
+              and (_d2_out / "terminal.js").read_bytes()
+              == terminal_js.encode("utf-8"),
               extra=_d2_cp.stdout + _d2_cp.stderr)
     else:
         print("[info] tsc not installed; emit-freshness check skipped (npm ci to enable)")
