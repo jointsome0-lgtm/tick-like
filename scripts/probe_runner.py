@@ -119,7 +119,7 @@ async def matrix() -> dict[str, object]:
 
         timeout_registry = {
             "python-timeout-fixture": RunnerSpec(
-                ("python3", SNAPSHOT_PATH), (".py",), wall_seconds=1
+                ("/usr/bin/python3", SNAPSHOT_PATH), (".py",), wall_seconds=1
             )
         }
         timeout_service = RunnerService(registry=timeout_registry)

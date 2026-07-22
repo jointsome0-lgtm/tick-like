@@ -49,7 +49,7 @@ TERMINAL_CAUSES = frozenset({
 })
 
 RUNNER_ENV: Mapping[str, str] = MappingProxyType({
-    "PATH": "/home/aina/.local/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin",
+    "PATH": "/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin",
     "HOME": sandbox.USER_HOME,
     # bubblewrap synthesizes PWD after --chdir; state the same safe value in
     # the allowlist so the child environment remains explicit and testable.
@@ -174,16 +174,10 @@ def _cached_runner_health() -> RunnerHealth:
     if detail:
         return RunnerHealth(False, f"--ro-bind-data probe failed: {detail}")
 
-    scope_env = dict(RUNNER_ENV)
-    for name in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
-        value = os.environ.get(name)
-        if value:
-            scope_env[name] = value
-    detail = _probe_result(
-        [*sandbox.RUNNER_SCOPE_PREFIX, "/usr/bin/true"], env=scope_env
-    )
-    if detail:
-        return RunnerHealth(False, f"systemd user scope probe failed: {detail}")
+    try:
+        sandbox.require_runner_scope_runtime()
+    except sandbox.SandboxError as exc:
+        return RunnerHealth(False, str(exc))
 
     checked: set[str] = set()
     for runner_id, spec in RUNNER_REGISTRY.items():
@@ -191,7 +185,11 @@ def _cached_runner_health() -> RunnerHealth:
         if executable in checked:
             continue
         checked.add(executable)
-        version_argv = [executable, "version"] if executable == "go" else [executable, "--version"]
+        version_argv = (
+            [executable, "version"]
+            if PurePosixPath(executable).name == "go"
+            else [executable, "--version"]
+        )
         detail = _probe_result(version_argv)
         if detail:
             return RunnerHealth(False, f"{runner_id} executable probe failed: {detail}")
@@ -244,6 +242,7 @@ class RunnerJob:
     stdout_eof: bool = False
     stderr_eof: bool = False
     reservation_released: bool = False
+    scope_unit: str = ""
     process: asyncio.subprocess.Process | None = field(default=None, repr=False)
     task: asyncio.Task[None] | None = field(default=None, repr=False)
     finished: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
@@ -260,7 +259,7 @@ class Admission:
     replayed: bool
 
 
-SpawnHook = Callable[[RunnerRequest, RunnerSpec], Awaitable[asyncio.subprocess.Process]]
+SpawnHook = Callable[[RunnerJob], Awaitable[asyncio.subprocess.Process]]
 RateHook = Callable[[str], object]
 RateRefundHook = Callable[[str, object], None]
 FinishHook = Callable[[RunnerJob], object]
@@ -343,7 +342,11 @@ class RunnerService:
                 self._refund_rate_locked(request.lesson_key, rate_charge)
                 raise GlobalCapacityError("global runner capacity reached")
 
-            job = RunnerJob(str(uuid4()), request, spec)
+            job_id = str(uuid4())
+            job = RunnerJob(
+                job_id, request, spec,
+                scope_unit=f"ephemeris-runner-{job_id}",
+            )
             self._jobs[job.job_id] = job
             self._idempotency[replay_key] = (
                 request.block_id, request.file_rev, job.job_id
@@ -372,7 +375,7 @@ class RunnerService:
             won = self._begin_termination_locked(job, "cancelled")
             process = job.process
         if won and process is not None:
-            self._kill_tree(process)
+            self._kill_tree(job)
         return won
 
     async def wait(self, job_id: str) -> RunnerJob | None:
@@ -389,10 +392,12 @@ class RunnerService:
             jobs = [job for job in self._jobs.values() if job.state != FINISHED]
             for job in jobs:
                 self._begin_termination_locked(job, "shutdown")
-            processes = [job.process for job in jobs if job.process is not None]
             tasks = [job.task for job in jobs if job.task is not None]
-        for process in processes:
-            self._kill_tree(process)
+        for job in jobs:
+            process = job.process
+            if process is None:
+                continue
+            self._kill_tree(job)
             for reader in (process.stdout, process.stderr):
                 transport = getattr(reader, "_transport", None)
                 if transport is not None:
@@ -401,8 +406,10 @@ class RunnerService:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _spawn(
-        self, request: RunnerRequest, spec: RunnerSpec
+        self, job: RunnerJob
     ) -> asyncio.subprocess.Process:
+        request = job.request
+        spec = job.spec
         basename = PurePosixPath(request.filename).name
         snapshot_path = f"{sandbox.RUNNER_WORKDIR}/{basename}"
         command = spec.command(snapshot_path)
@@ -420,6 +427,7 @@ class RunnerService:
             snapshot=request.snapshot,
             snapshot_name=basename,
             runner_wall_seconds=spec.wall_seconds,
+            runner_scope_unit=job.scope_unit,
         )
 
     async def _drive_job(self, job: RunnerJob) -> None:
@@ -431,7 +439,7 @@ class RunnerService:
                 self._finish_locked(job)
                 return
         try:
-            process = await self._spawn_hook(job.request, job.spec)
+            process = await self._spawn_hook(job)
         except Exception:
             async with self._lock:
                 self._begin_termination_locked(job, "spawn-failed")
@@ -449,7 +457,7 @@ class RunnerService:
             else:
                 kill_now = True
         if kill_now:
-            self._kill_tree(process)
+            self._kill_tree(job)
 
         readers = [
             asyncio.create_task(self._read_stream(job, "stdout", process.stdout)),
@@ -465,12 +473,12 @@ class RunnerService:
                 async with self._lock:
                     won = self._begin_termination_locked(job, "timeout")
                 if won:
-                    self._kill_tree(process)
+                    self._kill_tree(job)
                 returncode = await wait_task
         except asyncio.CancelledError:
             async with self._lock:
                 self._begin_termination_locked(job, "shutdown")
-            self._kill_tree(process)
+            self._kill_tree(job)
             returncode = await asyncio.shield(wait_task)
         finally:
             async with self._lock:
@@ -523,7 +531,7 @@ class RunnerService:
                         won = self._begin_termination_locked(job, "output-limit")
                         process = job.process
                     if won and process is not None:
-                        self._kill_tree(process)
+                        self._kill_tree(job)
                     # Continue draining, but the combined cap admits no bytes.
             tail = decoder.decode(b"", final=True)
             if tail:
@@ -534,7 +542,7 @@ class RunnerService:
                 won = self._begin_termination_locked(job, "spawn-failed")
                 process = job.process
             if won and process is not None:
-                self._kill_tree(process)
+                self._kill_tree(job)
         finally:
             async with self._lock:
                 setattr(job, eof_attr, True)
@@ -631,7 +639,34 @@ class RunnerService:
                 self._idempotency.pop(key, None)
 
     @staticmethod
-    def _kill_tree(process: asyncio.subprocess.Process) -> None:
+    def _kill_tree(job: RunnerJob) -> None:
+        scope_env = {"PATH": RUNNER_ENV["PATH"]}
+        for name in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
+            value = os.environ.get(name)
+            if value:
+                scope_env[name] = value
+        try:
+            subprocess.run(
+                [
+                    sandbox.SYSTEMCTL,
+                    "--user",
+                    "kill",
+                    "--kill-whom=all",
+                    "--signal=SIGKILL",
+                    f"{job.scope_unit}.scope",
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=scope_env,
+                check=False,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+        process = job.process
+        if process is None:
+            return
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:

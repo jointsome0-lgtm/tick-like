@@ -3908,7 +3908,6 @@ with TestClient(app) as c:
     check("E1 argv: lesson-runner ro bundle + isolated tmpfs cwd",
           set(_sb_mounts(_sb_runner, "--ro-bind")) == {
               ("/", "/"),
-              ("/home/aina/.local/bin", "/home/aina/.local/bin"),
               ("/home/aina/go/pkg/mod", "/home/aina/go/pkg/mod"),
               (_sb_bundle, _sb_bundle),
           }
@@ -4509,10 +4508,10 @@ with TestClient(app) as c:
               "python-script-v1", "go-run-v1",
           }
           and _runner_registry.RUNNER_REGISTRY["python-script-v1"].argv == (
-              "python3", _runner_registry.SNAPSHOT_PATH,
+              "/usr/bin/python3", _runner_registry.SNAPSHOT_PATH,
           )
           and _runner_registry.RUNNER_REGISTRY["go-run-v1"].argv == (
-              "go", "run", _runner_registry.SNAPSHOT_PATH,
+              "/usr/local/go/bin/go", "run", _runner_registry.SNAPSHOT_PATH,
           ))
     _f3_specs_valid = all(
         spec.argv.count(_runner_registry.SNAPSHOT_PATH) == 1
@@ -4520,7 +4519,7 @@ with TestClient(app) as c:
         for spec in _runner_registry.RUNNER_REGISTRY.values()
     )
     try:
-        _runner_registry.RunnerSpec(("python3",), (".py",))
+        _runner_registry.RunnerSpec(("/usr/bin/python3",), (".py",))
         _f3_bad_spec_refused = False
     except ValueError:
         _f3_bad_spec_refused = True
@@ -4649,6 +4648,10 @@ with TestClient(app) as c:
             return _types.SimpleNamespace(pid=999, stdout=None, stderr=None)
 
         with _sandbox_mock.patch.object(_sandbox, "require_sandbox_runtime"), \
+                _sandbox_mock.patch.object(_sandbox, "require_runner_scope_runtime"), \
+                _sandbox_mock.patch.object(
+                    _sandbox, "_systemd_no_expand_option", return_value=()
+                ), \
                 _sandbox_mock.patch.object(
                     _sandbox.asyncio, "create_subprocess_exec",
                     side_effect=successful_spawn,
@@ -4659,7 +4662,7 @@ with TestClient(app) as c:
                 stdin=subprocess.DEVNULL, stdout=_asyncio.subprocess.PIPE,
                 stderr=_asyncio.subprocess.PIPE, env=_runner.RUNNER_ENV,
                 snapshot=b"print('invented')\n", snapshot_name="main.py",
-                runner_wall_seconds=30,
+                runner_wall_seconds=30, runner_scope_unit="ephemeris-runner-test",
             )
         try:
             os.fstat(observed["fd"])
@@ -4674,6 +4677,10 @@ with TestClient(app) as c:
             raise OSError("invented spawn refusal")
 
         with _sandbox_mock.patch.object(_sandbox, "require_sandbox_runtime"), \
+                _sandbox_mock.patch.object(_sandbox, "require_runner_scope_runtime"), \
+                _sandbox_mock.patch.object(
+                    _sandbox, "_systemd_no_expand_option", return_value=()
+                ), \
                 _sandbox_mock.patch.object(
                     _sandbox.asyncio, "create_subprocess_exec",
                     side_effect=failed_spawn,
@@ -4684,6 +4691,7 @@ with TestClient(app) as c:
                     bundle_root=_f3_root, private_root=_f3_private,
                     env=_runner.RUNNER_ENV, snapshot=b"invented",
                     snapshot_name="main.py", runner_wall_seconds=30,
+                    runner_scope_unit="ephemeris-runner-test",
                 )
             except _sandbox.SandboxSpawnError:
                 pass
@@ -4695,14 +4703,69 @@ with TestClient(app) as c:
         return observed
 
     _f3_snapshot_spawn = _asyncio.run(_f3_snapshot_spawn_contract())
+
+    async def _f3_symlink_authority_contract():
+        with tempfile.TemporaryDirectory(
+            prefix="ephemeris-f3-symlink-", dir="/tmp"
+        ) as raw:
+            physical = Path(raw) / "physical"
+            bundle = physical / "lessons" / "invented-bundle"
+            bundle.mkdir(parents=True)
+            lexical = Path(raw) / "lexical"
+            lexical.symlink_to(physical, target_is_directory=True)
+            with _sandbox_mock.patch.object(_sandbox, "require_sandbox_runtime"), \
+                    _sandbox_mock.patch.object(
+                        _sandbox, "require_runner_scope_runtime"
+                    ), _sandbox_mock.patch.object(
+                        _sandbox.asyncio, "create_subprocess_exec"
+                    ) as spawn:
+                try:
+                    await _sandbox.spawn_sandboxed(
+                        "lesson-runner",
+                        lexical / "lessons" / "invented-bundle",
+                        ["/usr/bin/python3", f"{_sandbox.RUNNER_WORKDIR}/main.py"],
+                        bundle_root=lexical / "lessons",
+                        private_root=lexical,
+                        env=_runner.RUNNER_ENV,
+                        snapshot=b"print('invented')\n",
+                        snapshot_name="main.py",
+                        runner_wall_seconds=30,
+                        runner_scope_unit="ephemeris-runner-symlink-test",
+                    )
+                    return False
+                except _sandbox.SandboxSpawnError:
+                    return spawn.call_count == 0
+
+    _f3_symlink_authority_refused = _asyncio.run(
+        _f3_symlink_authority_contract()
+    )
+    _f3_kill_job = _types.SimpleNamespace(
+        scope_unit="ephemeris-runner-invented", process=_types.SimpleNamespace(pid=778899)
+    )
+    with _sandbox_mock.patch.object(_runner.subprocess, "run") as _systemctl_kill, \
+            _sandbox_mock.patch.object(_runner.os, "killpg") as _killpg:
+        _runner.RunnerService._kill_tree(_f3_kill_job)
+    _f3_scope_kill = (
+        _systemctl_kill.call_args.args[0] == [
+            _sandbox.SYSTEMCTL, "--user", "kill", "--kill-whom=all",
+            "--signal=SIGKILL", "ephemeris-runner-invented.scope",
+        ]
+        and _killpg.call_args.args == (778899, _runner.signal.SIGKILL)
+    )
     check("F3 snapshot fd is 0444, passed once, and closed on success/failure",
           _f3_snapshot_spawn["mode"] == 0o444
           and _f3_snapshot_spawn["closed_success"]
           and _f3_snapshot_spawn["closed_failure"]
           and _f3_snapshot_spawn["new_session"] is True)
+    check("F3 runner refuses symlinked bundle/private authorities before spawn",
+          _f3_symlink_authority_refused)
     check("F3 spawn is scope-wrapped and clears wrapper-only environment in bwrap",
           _f3_snapshot_spawn["argv"][:len(_sandbox.RUNNER_SCOPE_PREFIX)]
               == list(_sandbox.RUNNER_SCOPE_PREFIX)
+          and "--unit=ephemeris-runner-test" in _f3_snapshot_spawn["argv"]
+          and "--property=RuntimeMaxSec=35s" in _f3_snapshot_spawn["argv"]
+          and "--property=KillMode=control-group" in _f3_snapshot_spawn["argv"]
+          and _f3_scope_kill
           and "--clearenv" in _f3_snapshot_spawn["argv"]
           and ["--setenv", "PWD", _sandbox.RUNNER_WORKDIR]
               in [_f3_snapshot_spawn["argv"][i:i + 3]
@@ -4737,6 +4800,7 @@ with TestClient(app) as c:
 
     _runner._cached_runner_health.cache_clear()
     with _sandbox_mock.patch.object(_runner.sandbox, "require_sandbox_runtime"), \
+            _sandbox_mock.patch.object(_runner.sandbox, "require_runner_scope_runtime") as _scopeprobe, \
             _sandbox_mock.patch.object(_runner, "_probe_ro_bind_data", return_value="") as _roprobe, \
             _sandbox_mock.patch.object(_runner, "_probe_go_module_cache", return_value="") as _cacheprobe, \
             _sandbox_mock.patch.object(_runner, "_probe_result", return_value="") as _allprobe:
@@ -4744,8 +4808,8 @@ with TestClient(app) as c:
         _f3_health_b = _runner.runner_health()
     check("F3 health probes bwrap/ro-bind-data/scope/tools once per process",
           _f3_health_a.available and _f3_health_b.available
-          and _roprobe.call_count == 1 and _cacheprobe.call_count == 1
-          and _allprobe.call_count == 3)
+          and _scopeprobe.call_count == 1 and _roprobe.call_count == 1
+          and _cacheprobe.call_count == 1 and _allprobe.call_count == 2)
     _runner._cached_runner_health.cache_clear()
     with _sandbox_mock.patch.object(_runner.sandbox, "require_sandbox_runtime"), \
             _sandbox_mock.patch.object(_runner, "_probe_ro_bind_data", return_value="unsupported"):
@@ -4757,6 +4821,7 @@ with TestClient(app) as c:
     _runner._cached_runner_health.cache_clear()
     with _sandbox_mock.patch.object(_runner.sandbox, "require_sandbox_runtime"), \
             _sandbox_mock.patch.object(_runner, "_probe_ro_bind_data", return_value=""), \
+            _sandbox_mock.patch.object(_runner.sandbox, "require_runner_scope_runtime"), \
             _sandbox_mock.patch.object(_runner, "_probe_result", return_value=""), \
             _sandbox_mock.patch.object(
                 _runner, "_probe_go_module_cache", return_value="module cache absent"
@@ -4806,7 +4871,7 @@ with TestClient(app) as c:
         result = {}
         processes = []
 
-        async def spawn(_request, _spec):
+        async def spawn(_job):
             process = _F3Process()
             processes.append(process)
             return process
@@ -4839,7 +4904,7 @@ with TestClient(app) as c:
 
         cancel_processes = []
 
-        async def cancel_spawn(_request, _spec):
+        async def cancel_spawn(_job):
             process = _F3Process()
             cancel_processes.append(process)
             return process
@@ -4862,7 +4927,7 @@ with TestClient(app) as c:
             and sum(event["event"] == "exit" for event in cancelled.events) == 1
         )
 
-        async def broken_spawn(_request, _spec):
+        async def broken_spawn(_job):
             raise OSError("invented spawn failure")
 
         broken_service = _runner.RunnerService(
@@ -4877,7 +4942,7 @@ with TestClient(app) as c:
 
         race_processes = []
 
-        async def race_spawn(_request, _spec):
+        async def race_spawn(_job):
             process = _F3Process()
             race_processes.append(process)
             return process
@@ -4914,7 +4979,7 @@ with TestClient(app) as c:
 
         global_processes = []
 
-        async def global_spawn(_request, _spec):
+        async def global_spawn(_job):
             process = _F3Process()
             global_processes.append(process)
             return process
@@ -4940,7 +5005,7 @@ with TestClient(app) as c:
         rate_calls = []
         replay_processes = []
 
-        async def replay_spawn(_request, _spec):
+        async def replay_spawn(_job):
             process = _F3Process()
             replay_processes.append(process)
             return process
@@ -4977,7 +5042,7 @@ with TestClient(app) as c:
 
         shutdown_processes = []
 
-        async def shutdown_spawn(_request, _spec):
+        async def shutdown_spawn(_job):
             process = _F3Process()
             shutdown_processes.append(process)
             return process
@@ -5070,7 +5135,7 @@ with TestClient(app) as c:
                   "scratch_writable", "gocache_writable",
               ))
               and _f3_isolation.get("snapshot_mode") == "0o444"
-              and _f3_isolation.get("home_entries") == [".cache", ".local", "go"]
+              and _f3_isolation.get("home_entries") == [".cache", "go"]
               and set(_f3_isolation.get("runner_env", ())) == set(_runner.RUNNER_ENV),
               _f3_probe_extra)
         check("F3 cold Go and warm-within-job/repeat/change/compile-error matrix passes",

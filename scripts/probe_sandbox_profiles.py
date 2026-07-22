@@ -37,7 +37,7 @@ profile, bundle, repo = sys.argv[1:]
 expected_home = {
     "lesson-agent": {".cache", ".claude", ".claude.json", ".codex", ".local", ".nvm", "go"},
     "lesson-learner": {".cache", ".local", "go"},
-    "lesson-runner": {".local", "go"},
+    "lesson-runner": {"go"},
 }[profile]
 home_entries = {entry.name for entry in Path("/home/aina").iterdir()}
 probe_file = Path(bundle) / ".e1-write-probe"

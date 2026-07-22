@@ -49,12 +49,12 @@ class RunnerSpec:
 
 RUNNER_REGISTRY: Mapping[str, RunnerSpec] = MappingProxyType({
     "python-script-v1": RunnerSpec(
-        argv=("python3", SNAPSHOT_PATH),
+        argv=("/usr/bin/python3", SNAPSHOT_PATH),
         suffixes=(".py",),
         wall_seconds=30,
     ),
     "go-run-v1": RunnerSpec(
-        argv=("go", "run", SNAPSHOT_PATH),
+        argv=("/usr/local/go/bin/go", "run", SNAPSHOT_PATH),
         suffixes=(".go",),
         wall_seconds=60,
     ),

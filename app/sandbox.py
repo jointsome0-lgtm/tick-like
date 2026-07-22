@@ -23,6 +23,7 @@ USER_HOME = "/home/aina"
 RUNNER_WORKDIR = "/tmp/ephemeris-runner"
 RUNTIME_DIR = "/run"
 SYSTEMD_RUN = "/usr/bin/systemd-run"
+SYSTEMCTL = "/usr/bin/systemctl"
 EPHEMERIS_CHECKOUT_ROOT = str(Path(__file__).resolve().parents[1])
 GO_MODULE_CACHE_ROOT = f"{USER_HOME}/go/pkg/mod"
 
@@ -31,6 +32,7 @@ RUNNER_HOME_BYTES = 256 * 1024 * 1024
 RUNNER_ADDRESS_SPACE_BYTES = 1024 * 1024 * 1024
 RUNNER_FILE_BYTES = 32 * 1024 * 1024
 RUNNER_MAX_WALL_SECONDS = 120
+RUNNER_SCOPE_GRACE_SECONDS = 5
 RUNNER_NPROC = 4096
 
 RUNNER_SCOPE_PREFIX = (
@@ -42,8 +44,51 @@ RUNNER_SCOPE_PREFIX = (
     "--property=TasksMax=256",
     "--property=MemoryMax=1G",
     "--property=MemorySwapMax=0",
-    "--",
+    "--property=KillMode=control-group",
 )
+
+
+@cache
+def _systemd_no_expand_option() -> tuple[str, ...]:
+    """Use the explicit no-expansion switch when this host systemd has it."""
+    try:
+        result = subprocess.run(
+            [SYSTEMD_RUN, "--help"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ()
+    if "--expand-environment" in result.stdout:
+        return ("--expand-environment=no",)
+    return ()
+
+
+def runner_scope_prefix(
+    wall_seconds: int,
+    *,
+    unit_name: str | None = None,
+) -> tuple[str, ...]:
+    """Build the aggregate runner scope wrapper with an orphan backstop."""
+    if not 1 <= wall_seconds <= RUNNER_MAX_WALL_SECONDS:
+        raise ValueError("runner scope requires a bounded wall limit")
+    if unit_name is not None and (
+        not unit_name.startswith("ephemeris-runner-")
+        or not unit_name.removeprefix("ephemeris-runner-").replace("-", "").isalnum()
+    ):
+        raise ValueError("runner scope unit name is invalid")
+    argv = [*RUNNER_SCOPE_PREFIX, *_systemd_no_expand_option()]
+    if unit_name is not None:
+        argv.append(f"--unit={unit_name}")
+    argv.extend([
+        f"--property=RuntimeMaxSec={wall_seconds + RUNNER_SCOPE_GRACE_SECONDS}s",
+        "--",
+    ])
+    return tuple(argv)
 
 
 class SandboxError(RuntimeError):
@@ -285,7 +330,7 @@ def build_sandbox_argv(
         # whole runtime tree; /var/run resolves into this mount as well.
         argv.extend(["--tmpfs", RUNTIME_DIR])
 
-    mounts = list(_COMMON_HOME_MOUNTS)
+    mounts = [] if profile == "lesson-runner" else list(_COMMON_HOME_MOUNTS)
     if profile == "lesson-agent":
         mounts.extend(_AGENT_HOME_MOUNTS)
     elif profile == "lesson-learner":
@@ -336,6 +381,38 @@ def build_sandbox_argv(
 class _ProbeResult:
     available: bool
     detail: str = ""
+
+
+@cache
+def _cached_runner_scope_probe() -> _ProbeResult:
+    """Verify limits and literal argv delivery through the user scope."""
+    literal = "$EPHEMERIS_SCOPE_LITERAL"
+    prefix = list(runner_scope_prefix(5))
+    prefix[-1:-1] = ["--setenv=EPHEMERIS_SCOPE_LITERAL=expanded"]
+    try:
+        result = subprocess.run(
+            [*prefix, "/usr/bin/printf", "%s", literal],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return _ProbeResult(False, str(exc))
+    if result.returncode == 0 and result.stdout == literal:
+        return _ProbeResult(True)
+    detail = " ".join((result.stderr or result.stdout or "").split())
+    return _ProbeResult(False, detail[:500] or f"exit {result.returncode}")
+
+
+def require_runner_scope_runtime() -> None:
+    result = _cached_runner_scope_probe()
+    if not result.available:
+        raise SandboxUnavailableError(
+            f"systemd user scope probe failed: {result.detail}"
+        )
 
 
 @cache
@@ -491,19 +568,26 @@ async def spawn_sandboxed(
     snapshot: bytes | None = None,
     snapshot_name: str | None = None,
     runner_wall_seconds: int | None = None,
+    runner_scope_unit: str | None = None,
 ) -> asyncio.subprocess.Process:
     """Spawn inside ``profile`` or raise; ``env`` must be explicitly allowlisted."""
     if not command:
         raise ValueError("sandbox command must not be empty")
     if profile == "lesson-runner" and (
         snapshot is None or snapshot_name is None or runner_wall_seconds is None
+        or runner_scope_unit is None
     ):
-        raise ValueError("lesson-runner requires snapshot bytes, name, and wall limit")
+        raise ValueError(
+            "lesson-runner requires snapshot bytes, name, wall limit, and scope unit"
+        )
     if profile != "lesson-runner" and (
-        snapshot is not None or snapshot_name is not None or runner_wall_seconds is not None
+        snapshot is not None or snapshot_name is not None
+        or runner_wall_seconds is not None or runner_scope_unit is not None
     ):
         raise ValueError("runner-only spawn arguments used for a terminal profile")
     require_sandbox_runtime()
+    if profile == "lesson-runner":
+        require_runner_scope_runtime()
     snapshot_fd: int | None = None
     try:
         if snapshot is not None:
@@ -516,12 +600,23 @@ async def spawn_sandboxed(
             snapshot_name=snapshot_name,
         )
         if profile == "lesson-runner":
+            for authority in (bundle_dir, bundle_root, private_root):
+                path = Path(authority)  # type: ignore[arg-type]
+                if path.absolute() != path.resolve(strict=False):
+                    raise SandboxSpawnError(
+                        "lesson-runner refuses symlinked bundle/private authorities"
+                    )
             bwrap_argv.append("--clearenv")
             for name, value in env.items():
                 bwrap_argv.extend(["--setenv", name, value])
         bwrap_argv.extend(["--", *command])
         argv = (
-            [*RUNNER_SCOPE_PREFIX, *bwrap_argv]
+            [
+                *runner_scope_prefix(
+                    runner_wall_seconds, unit_name=runner_scope_unit
+                ),
+                *bwrap_argv,
+            ]
             if profile == "lesson-runner" else bwrap_argv
         )
         kwargs = {}
