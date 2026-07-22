@@ -19,7 +19,23 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-_None._
+- [ ] 2026-07-22 — commits after `f2487ee` on `fix/36-f3-run-api` —
+  `app/main.py`, `app/runner.py`, `app/security.py`, `app/services/artifacts.py`,
+  `app/services/runs.py`, `app/templates/learn.html`,
+  `docs/lesson-artifacts-api.md`, `verify.py`, `docs/reviews/QUEUE.md` — issue
+  #36 phase F slice F4 wires the reviewed runner core into the app lifecycle
+  and adds manifest-addressed, revision-bound run start/status/SSE/cancel
+  routes, bounded reader/replay/retention state, run rate accounting, and
+  best-effort terminal telemetry; it does not change the static bridge runtime,
+  terminal PTY/WebSocket core, sandbox limits, or attempt endpoint.
+  Codex review round 1 fixes same-origin admission before SSE reader
+  reservation, refunds rate permits on runner-health refusal, and preserves
+  attached streams during retention pruning.
+  Codex review round 2 keeps replay identity while an attached stream protects
+  its job, moves cold health probes off the ASGI event loop and service lock,
+  and prevents late cancellation from relabelling an already reaped process.
+  Codex review round 3 moves process-tree kills off the event loop, gives SSE
+  readers independent wakeups, and drains an exit that races a stream poll.
 
 ## Done
 

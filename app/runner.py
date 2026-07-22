@@ -14,6 +14,7 @@ import os
 import signal
 import subprocess
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from functools import cache
 from pathlib import Path, PurePosixPath
@@ -104,6 +105,10 @@ class GlobalCapacityError(RunnerError):
 
 class JobMissingError(RunnerError):
     code = "job-missing"
+
+
+class ReaderCapacityError(RunnerError):
+    code = "busy"
 
 
 @dataclass(frozen=True)
@@ -241,6 +246,9 @@ class RunnerRequest:
     bundle_root: str
     private_root: str
     private_masks: tuple[str, ...] = ()
+    lesson_uid: str = ""
+    lesson_id: int = 0
+    slug: str = ""
 
 
 @dataclass
@@ -261,10 +269,14 @@ class RunnerJob:
     stdout_eof: bool = False
     stderr_eof: bool = False
     reservation_released: bool = False
+    event_recorded: bool = False
+    reader_count: int = 0
     scope_unit: str = ""
     process: asyncio.subprocess.Process | None = field(default=None, repr=False)
     task: asyncio.Task[None] | None = field(default=None, repr=False)
     finished: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    event_attempted: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    _waiters: set[asyncio.Future[None]] = field(default_factory=set, repr=False)
     _next_seq: int = field(default=1, repr=False)
 
     @property
@@ -278,10 +290,16 @@ class Admission:
     replayed: bool
 
 
+@dataclass(frozen=True)
+class AdmissionPermit:
+    rate_charge: object | None
+
+
 SpawnHook = Callable[[RunnerJob], Awaitable[asyncio.subprocess.Process]]
 RateHook = Callable[[str], object]
 RateRefundHook = Callable[[str, object], None]
 FinishHook = Callable[[RunnerJob], object]
+_NO_RATE_PERMIT = object()
 
 
 class RunnerService:
@@ -304,7 +322,11 @@ class RunnerService:
         self._lock = asyncio.Lock()
         self._output_lock = asyncio.Lock()
         self._jobs: dict[str, RunnerJob] = {}
-        self._idempotency: dict[tuple[str, str], tuple[str, str, str]] = {}
+        self._idempotency: dict[
+            tuple[str, str], tuple[str, str, str, float | None]
+        ] = {}
+        self._finish_tasks: set[asyncio.Task[None]] = set()
+        self._prepare_locks: dict[str, asyncio.Lock] = {}
         self._active_by_lesson: dict[str, int] = {}
         self._active_total = 0
         self._accepting = True
@@ -323,37 +345,164 @@ class RunnerService:
     def active_total(self) -> int:
         return self._active_total
 
-    async def admit(self, request: RunnerRequest) -> Admission:
-        """Replay/rate/capacity/reservation transaction under one lock."""
+    @asynccontextmanager
+    async def prepare_start(self, lesson_key: str):
+        """Serialize one lesson's preflight/validation/admit pipeline."""
+        async with self._lock:
+            lock = self._prepare_locks.get(lesson_key)
+            if lock is None:
+                lock = self._prepare_locks[lesson_key] = asyncio.Lock()
+        async with lock:
+            yield
+
+    def _replay_locked(
+        self,
+        lesson_key: str,
+        idempotency_key: str,
+        block_id: str,
+        file_rev: str,
+    ) -> Admission | None:
+        replay = self._idempotency.get((lesson_key, idempotency_key))
+        if replay is None:
+            return None
+        saved_block, saved_rev, job_id, _expires = replay
+        if (saved_block, saved_rev) != (block_id, file_rev):
+            raise IdempotencyConflictError(idempotency_key)
+        job = self._jobs.get(job_id)
+        if job is None:
+            raise JobMissingError(job_id)
+        return Admission(job, True)
+
+    async def preflight(
+        self,
+        lesson_key: str,
+        idempotency_key: str,
+        block_id: str,
+        file_rev: str,
+    ) -> Admission | AdmissionPermit:
+        """Resolve cheap state and reserve rate before filesystem validation."""
         async with self._lock:
             self._prune_locked()
-            replay_key = (request.lesson_key, request.idempotency_key)
-            replay = self._idempotency.get(replay_key)
+            replay = self._replay_locked(
+                lesson_key, idempotency_key, block_id, file_rev
+            )
             if replay is not None:
-                block_id, file_rev, job_id = replay
-                if (block_id, file_rev) != (request.block_id, request.file_rev):
-                    raise IdempotencyConflictError(request.idempotency_key)
-                job = self._jobs.get(job_id)
-                if job is None:
-                    raise JobMissingError(job_id)
-                return Admission(job, True)
+                return replay
             if not self._accepting:
                 raise RunnerShuttingDownError("runner service is shutting down")
-            if not request.private_root:
-                raise RunnerUnavailableError("runner private instance root is required")
-            if len(request.snapshot) > sandbox.RUNNER_FILE_BYTES:
-                raise SnapshotTooLargeError(
-                    f"runner snapshot exceeds {sandbox.RUNNER_FILE_BYTES} bytes"
-                )
-            spec = self._registry.get(request.runner_id)
-            if spec is None:
-                raise UnknownRunnerError(request.runner_id)
-            basename = PurePosixPath(request.filename).name
-            if basename in ("", ".", "..") or not spec.accepts(basename):
-                raise IncompatibleRunnerError(request.filename)
-            self._health_hook()
+            if self._active_by_lesson.get(lesson_key, 0) >= self._per_lesson_limit:
+                raise LessonCapacityError(lesson_key)
+            if self._active_total >= self._global_limit:
+                raise GlobalCapacityError("global runner capacity reached")
             rate_charge: object | None = None
             if self._rate_hook is not None:
+                rate_charge = self._rate_hook(lesson_key)
+                if rate_charge is False:
+                    raise RateLimitedError(lesson_key)
+            return AdmissionPermit(rate_charge)
+
+    async def admit(
+        self,
+        request: RunnerRequest,
+        *,
+        rate_permit: object = _NO_RATE_PERMIT,
+    ) -> Admission:
+        """Validate health off-loop, then reserve under the admission lock."""
+        replay_key = (request.lesson_key, request.idempotency_key)
+        permit_supplied = rate_permit is not _NO_RATE_PERMIT
+        supplied_charge = rate_permit if permit_supplied else None
+
+        # Keep replay/error ordering ahead of health, and reject cheap request
+        # defects without starting subprocess probes.  Health itself must run
+        # outside both the event loop and this lock so status/SSE/cancel remain
+        # responsive during a cold or unhealthy probe.
+        async with self._lock:
+            self._prune_locked()
+            try:
+                replay = self._replay_locked(
+                    request.lesson_key, request.idempotency_key,
+                    request.block_id, request.file_rev,
+                )
+            except (IdempotencyConflictError, JobMissingError):
+                if permit_supplied:
+                    self._refund_rate_locked(
+                        request.lesson_key, supplied_charge
+                    )
+                raise
+            if replay is not None:
+                if permit_supplied:
+                    self._refund_rate_locked(
+                        request.lesson_key, supplied_charge
+                    )
+                return replay
+            if not self._accepting:
+                if permit_supplied:
+                    self._refund_rate_locked(
+                        request.lesson_key, supplied_charge
+                    )
+                raise RunnerShuttingDownError("runner service is shutting down")
+            try:
+                if not request.private_root:
+                    raise RunnerUnavailableError(
+                        "runner private instance root is required"
+                    )
+                if len(request.snapshot) > sandbox.RUNNER_FILE_BYTES:
+                    raise SnapshotTooLargeError(
+                        f"runner snapshot exceeds {sandbox.RUNNER_FILE_BYTES} bytes"
+                    )
+                spec = self._registry.get(request.runner_id)
+                if spec is None:
+                    raise UnknownRunnerError(request.runner_id)
+                basename = PurePosixPath(request.filename).name
+                if basename in ("", ".", "..") or not spec.accepts(basename):
+                    raise IncompatibleRunnerError(request.filename)
+            except RunnerError:
+                if permit_supplied:
+                    self._refund_rate_locked(
+                        request.lesson_key, supplied_charge
+                    )
+                raise
+
+        try:
+            await asyncio.to_thread(self._health_hook)
+        except BaseException:
+            if permit_supplied:
+                async with self._lock:
+                    self._refund_rate_locked(
+                        request.lesson_key, supplied_charge
+                    )
+            raise
+
+        # State may have changed while health ran.  Repeat all mutable checks;
+        # a concurrent identical winner replays and any supplied rate permit is
+        # refunded before returning or refusing.
+        async with self._lock:
+            self._prune_locked()
+            try:
+                replay = self._replay_locked(
+                    request.lesson_key, request.idempotency_key,
+                    request.block_id, request.file_rev,
+                )
+            except (IdempotencyConflictError, JobMissingError):
+                if permit_supplied:
+                    self._refund_rate_locked(
+                        request.lesson_key, supplied_charge
+                    )
+                raise
+            if replay is not None:
+                if permit_supplied:
+                    self._refund_rate_locked(
+                        request.lesson_key, supplied_charge
+                    )
+                return replay
+            if not self._accepting:
+                if permit_supplied:
+                    self._refund_rate_locked(
+                        request.lesson_key, supplied_charge
+                    )
+                raise RunnerShuttingDownError("runner service is shutting down")
+            rate_charge: object | None = supplied_charge
+            if not permit_supplied and self._rate_hook is not None:
                 rate_charge = self._rate_hook(request.lesson_key)
                 if rate_charge is False:
                     raise RateLimitedError(request.lesson_key)
@@ -372,7 +521,7 @@ class RunnerService:
             )
             self._jobs[job.job_id] = job
             self._idempotency[replay_key] = (
-                request.block_id, request.file_rev, job.job_id
+                request.block_id, request.file_rev, job.job_id, None
             )
             self._active_by_lesson[request.lesson_key] = lesson_active + 1
             self._active_total += 1
@@ -380,6 +529,15 @@ class RunnerService:
                 self._drive_job(job), name=f"lesson-runner-{job.job_id}"
             )
             return Admission(job, False)
+
+    async def charge_validation_refusal(self, lesson_key: str) -> None:
+        """Charge one expensive start validation that did not reach admit()."""
+        async with self._lock:
+            if self._rate_hook is None:
+                return
+            charge = self._rate_hook(lesson_key)
+            if charge is False:
+                raise RateLimitedError(lesson_key)
 
     def _refund_rate_locked(self, lesson_key: str, charge: object | None) -> None:
         if charge is not None and self._rate_refund_hook is not None:
@@ -390,15 +548,70 @@ class RunnerService:
             self._prune_locked()
             return self._jobs.get(job_id)
 
+    async def attach_reader(self, job_id: str) -> RunnerJob:
+        async with self._lock:
+            self._prune_locked()
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise JobMissingError(job_id)
+            if job.reader_count >= 2:
+                raise ReaderCapacityError(job_id)
+            job.reader_count += 1
+            return job
+
+    async def detach_reader(self, job: RunnerJob) -> None:
+        async with self._lock:
+            if job.reader_count > 0:
+                job.reader_count -= 1
+            self._prune_locked()
+
+    async def events_after(
+        self, job_id: str, after: int
+    ) -> tuple[RunnerJob, tuple[dict, ...], str]:
+        async with self._lock:
+            self._prune_locked()
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise JobMissingError(job_id)
+            events = tuple(
+                event.copy() for event in job.events
+                if int(event["seq"]) > after
+            )
+            return job, events, job.state
+
+    async def wait_for_update(self, job_id: str, after: int) -> None:
+        """Wait without a shared-clear race between concurrent SSE readers."""
+        async with self._lock:
+            self._prune_locked()
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise JobMissingError(job_id)
+            if job.state == FINISHED or any(
+                int(event["seq"]) > after for event in job.events
+            ):
+                return
+            waiter = asyncio.get_running_loop().create_future()
+            job._waiters.add(waiter)
+        try:
+            await waiter
+        finally:
+            async with self._lock:
+                job._waiters.discard(waiter)
+
     async def cancel(self, job_id: str) -> bool:
         async with self._lock:
             job = self._jobs.get(job_id)
             if job is None or job.state == FINISHED:
                 return False
-            won = self._begin_termination_locked(job, "cancelled")
             process = job.process
+            if (
+                job.process_reaped
+                or process is not None and process.returncode is not None
+            ):
+                return False
+            won = self._begin_termination_locked(job, "cancelled")
         if won and process is not None:
-            self._kill_tree(job)
+            await asyncio.to_thread(self._kill_tree, job)
         return won
 
     async def wait(self, job_id: str) -> RunnerJob | None:
@@ -416,17 +629,24 @@ class RunnerService:
             for job in jobs:
                 self._begin_termination_locked(job, "shutdown")
             tasks = [job.task for job in jobs if job.task is not None]
-        for job in jobs:
+        kill_jobs = [job for job in jobs if job.process is not None]
+        if kill_jobs:
+            await asyncio.gather(*(
+                asyncio.to_thread(self._kill_tree, job) for job in kill_jobs
+            ))
+        for job in kill_jobs:
             process = job.process
             if process is None:
                 continue
-            self._kill_tree(job)
             for reader in (process.stdout, process.stderr):
                 transport = getattr(reader, "_transport", None)
                 if transport is not None:
                     transport.close()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        finish_tasks = tuple(self._finish_tasks)
+        if finish_tasks:
+            await asyncio.gather(*finish_tasks, return_exceptions=True)
 
     async def _spawn(
         self, job: RunnerJob
@@ -480,7 +700,7 @@ class RunnerService:
             else:
                 kill_now = True
         if kill_now:
-            self._kill_tree(job)
+            await asyncio.to_thread(self._kill_tree, job)
 
         readers = [
             asyncio.create_task(self._read_stream(job, "stdout", process.stdout)),
@@ -496,12 +716,12 @@ class RunnerService:
                 async with self._lock:
                     won = self._begin_termination_locked(job, "timeout")
                 if won:
-                    self._kill_tree(job)
+                    await asyncio.to_thread(self._kill_tree, job)
                 returncode = await wait_task
         except asyncio.CancelledError:
             async with self._lock:
                 self._begin_termination_locked(job, "shutdown")
-            self._kill_tree(job)
+            await asyncio.to_thread(self._kill_tree, job)
             returncode = await asyncio.shield(wait_task)
         finally:
             async with self._lock:
@@ -554,7 +774,7 @@ class RunnerService:
                         won = self._begin_termination_locked(job, "output-limit")
                         process = job.process
                     if won and process is not None:
-                        self._kill_tree(job)
+                        await asyncio.to_thread(self._kill_tree, job)
                     # Continue draining, but the combined cap admits no bytes.
             tail = decoder.decode(b"", final=True)
             if tail:
@@ -565,7 +785,7 @@ class RunnerService:
                 won = self._begin_termination_locked(job, "spawn-failed")
                 process = job.process
             if won and process is not None:
-                self._kill_tree(job)
+                await asyncio.to_thread(self._kill_tree, job)
         finally:
             async with self._lock:
                 setattr(job, eof_attr, True)
@@ -579,6 +799,7 @@ class RunnerService:
             "text": text,
         })
         job._next_seq += 1
+        self._notify_waiters(job)
 
     def _begin_termination_locked(self, job: RunnerJob, cause: str) -> bool:
         if cause not in TERMINAL_CAUSES:
@@ -627,18 +848,42 @@ class RunnerService:
             event["signal"] = job.signal
         job.events.append(event)
         job._next_seq += 1
+        self._notify_waiters(job)
         job.finished.set()
+        replay_key = (job.request.lesson_key, job.request.idempotency_key)
+        replay = self._idempotency.get(replay_key)
+        if replay is not None and replay[2] == job.job_id:
+            self._idempotency[replay_key] = (
+                replay[0], replay[1], replay[2],
+                job.finished_monotonic + self._retention_seconds,
+            )
         self._prune_locked()
         if self._finish_hook is not None:
-            asyncio.create_task(self._notify_finish(job))
+            task = asyncio.create_task(self._notify_finish(job))
+            self._finish_tasks.add(task)
+            task.add_done_callback(self._finish_tasks.discard)
+        else:
+            job.event_attempted.set()
 
     async def _notify_finish(self, job: RunnerJob) -> None:
         try:
             result = self._finish_hook(job) if self._finish_hook is not None else None
             if inspect.isawaitable(result):
-                await result
+                result = await result
+            job.event_recorded = bool(result)
         except Exception:
-            pass
+            job.event_recorded = False
+        finally:
+            job.event_attempted.set()
+            self._notify_waiters(job)
+
+    @staticmethod
+    def _notify_waiters(job: RunnerJob) -> None:
+        waiters = tuple(job._waiters)
+        job._waiters.clear()
+        for waiter in waiters:
+            if not waiter.done():
+                waiter.set_result(None)
 
     def _prune_locked(self) -> None:
         now = time.monotonic()
@@ -647,18 +892,25 @@ class RunnerService:
             if job.state == FINISHED and job.finished_monotonic is not None
         ]
         terminal.sort(key=lambda job: job.finished_monotonic or 0)
+        protected = [job for job in terminal if job.reader_count > 0]
+        eligible = [job for job in terminal if job.reader_count == 0]
         expired = {
-            job.job_id for job in terminal
+            job.job_id for job in eligible
             if now - (job.finished_monotonic or now) >= self._retention_seconds
         }
-        excess = max(0, len(terminal) - self._max_terminal_jobs)
-        expired.update(job.job_id for job in terminal[:excess])
+        retained_slots = max(0, self._max_terminal_jobs - len(protected))
+        unexpired = [job for job in eligible if job.job_id not in expired]
+        excess = max(0, len(unexpired) - retained_slots)
+        expired.update(job.job_id for job in unexpired[:excess])
         for job_id in expired:
-            job = self._jobs.pop(job_id, None)
-            if job is None:
-                continue
-            key = (job.request.lesson_key, job.request.idempotency_key)
-            if self._idempotency.get(key, (None, None, None))[2] == job_id:
+            self._jobs.pop(job_id, None)
+        for key, replay in tuple(self._idempotency.items()):
+            expires = replay[3]
+            if (
+                expires is not None
+                and now >= expires
+                and replay[2] not in self._jobs
+            ):
                 self._idempotency.pop(key, None)
 
     @staticmethod
