@@ -19,18 +19,36 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-22 — commits after `e3cb882` on
-  `fix/36-f1-runner-core` — `app/runner.py`, `app/sandbox.py`,
-  `app/services/runner_registry.py`, `app/services/bundle_schema.py`,
-  `app/services/lessons.py`, `fixtures/runner/`, `scripts/probe_runner.py`,
-  `scripts/probe_sandbox_profiles.py`, `verify.py`,
-  `docs/learn-bundle-spec.md`, `docs/reviews/QUEUE.md` — issue #36
-  phase F slice F3 adds the fixed single-file runner registry, immutable
-  fd-backed snapshot sandbox profile, bounded async job owner, cached health
-  probes, admission and retention state, and throwaway isolation/execution
-  fixtures; no HTTP route or live spawn integration is added.
+_None._
 
 ## Done
+
+- [x] 2026-07-22 — commits after `e3cb882` on
+  `fix/36-f1-runner-core`; LANDED via merge commit `76e521d`, whose tree is
+  byte-identical to reviewed branch head `f6715f5` — `app/runner.py`,
+  `app/sandbox.py`, `app/services/runner_registry.py`,
+  `app/services/bundle_schema.py`, `app/services/lessons.py`,
+  `fixtures/runner/`, `scripts/probe_runner.py`,
+  `scripts/probe_sandbox_profiles.py`, `verify.py`,
+  `docs/learn-bundle-spec.md`, `docs/reviews/QUEUE.md` — issue #36 phase F
+  slice F3 adds the fixed single-file runner registry, immutable fd-backed
+  snapshot sandbox profile, bounded async job owner, cached health probes,
+  admission and retention state, and throwaway isolation/execution fixtures;
+  no HTTP route or live spawn integration is added. `68045f6` (drain cycle 1)
+  caps admitted/retained snapshots at 32 MiB, clears Run authority on rejected
+  or non-interactive manifests, and changes the Go module-cache mount and
+  health check to use a no-follow directory fd; `3347293` (drain cycle 2)
+  refuses symlinks in every component of that fd authority path; verify 672,
+  verify_restore 28. Drained 2026-07-22 →
+  `2026-07-22-runner-core-review.md`: two Medium and one Low findings, all
+  resolved in two cycles; no Critical, High, Medium, Low, Info, or open finding
+  remains. E1, lesson-role, terminal-surface, pedagogy, and bundle-schema
+  protections remain resolved; D5 L1 remains mitigated, D5 L2/L3 remain
+  resolved, D4 A1/A2 and the plain-owner-shell T1 remain accepted follow-ups;
+  route/client/lifecycle runner integration remains later scope. Final verdict:
+  SAFE TO MAKE LIVE for the documented direct-loopback single-worker
+  deployment; wider, proxy-adjacent, multi-user, or live-runner deployment NO.
+  Live restart is owner-only and was not performed.
 
 - [x] 2026-07-22 — `d5f628f`, `0258dc3` on
   `fix/35-pedagogy-template-e` — `app/services/lessons.py`, `verify.py`,
