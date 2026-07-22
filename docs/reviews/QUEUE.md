@@ -19,7 +19,15 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-_None._
+- [ ] 2026-07-22 — commits after `0ea44d8` on
+  `fix/36-f2-editor-backend` — `app/main.py`, `app/request_body.py`,
+  `app/services/artifacts.py`, `app/services/lessons.py`,
+  `app/templates/learn.html`, `docs/lesson-artifacts-api.md`, `verify.py`,
+  `docs/reviews/QUEUE.md` — issue #36 phase F slice F1 adds pure bundle reads,
+  manifest-addressed artifact GET/save routes, descriptor-bound safe-file
+  checks, fd-relative atomic publication, revisions/conflicts, save telemetry,
+  bounded request admission, and armed-page block metadata; it does not add a
+  run route or change the existing attempt endpoint.
 
 ## Done
 
