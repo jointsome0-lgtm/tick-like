@@ -19,25 +19,37 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 
 ## Pending
 
-- [ ] 2026-07-22 — commits after `f2487ee` on `fix/36-f3-run-api` —
-  `app/main.py`, `app/runner.py`, `app/security.py`, `app/services/artifacts.py`,
-  `app/services/runs.py`, `app/templates/learn.html`,
-  `docs/lesson-artifacts-api.md`, `verify.py`, `docs/reviews/QUEUE.md` — issue
-  #36 phase F slice F4 wires the reviewed runner core into the app lifecycle
-  and adds manifest-addressed, revision-bound run start/status/SSE/cancel
-  routes, bounded reader/replay/retention state, run rate accounting, and
-  best-effort terminal telemetry; it does not change the static bridge runtime,
-  terminal PTY/WebSocket core, sandbox limits, or attempt endpoint.
-  Codex review round 1 fixes same-origin admission before SSE reader
-  reservation, refunds rate permits on runner-health refusal, and preserves
-  attached streams during retention pruning.
-  Codex review round 2 keeps replay identity while an attached stream protects
-  its job, moves cold health probes off the ASGI event loop and service lock,
-  and prevents late cancellation from relabelling an already reaped process.
-  Codex review round 3 moves process-tree kills off the event loop, gives SSE
-  readers independent wakeups, and drains an exit that races a stream poll.
+_None._
 
 ## Done
+
+- [x] 2026-07-22 — commits after `f2487ee` on `fix/36-f3-run-api`; LANDED via
+  merge commit `b40a099`, whose tree is byte-identical to reviewed branch head
+  `c660ba4` — `app/main.py`, `app/runner.py`, `app/security.py`,
+  `app/services/artifacts.py`, `app/services/runs.py`,
+  `app/templates/learn.html`, `docs/lesson-artifacts-api.md`, `verify.py`,
+  `docs/reviews/QUEUE.md` — issue #36 phase F slice F4 wires the reviewed
+  runner core into the app lifecycle and adds manifest-addressed,
+  revision-bound run start/status/SSE/cancel routes, bounded
+  reader/replay/retention state, run rate accounting, and best-effort terminal
+  telemetry; it does not change the static bridge runtime, terminal
+  PTY/WebSocket core, sandbox limits, or attempt endpoint. Three Codex review
+  rounds hardened same-origin reader admission, health/refund behavior,
+  attached-stream retention and replay, nonblocking health/kill control paths,
+  late-cancel semantics, independent reader wakeups, and raced-exit draining.
+  `f7e9aef` (drain cycle 1) gives each SSE attachment an idempotent response-
+  lifecycle lease, caps distinct reader-protected jobs at the terminal
+  retention bound, and makes the process-lifetime runner health probe
+  single-flight across concurrent callers; verify 719, verify_restore 28.
+  Drained 2026-07-22 → `2026-07-22-lesson-run-api-review.md`: three Low
+  findings, all resolved in one cycle; no Critical, High, Medium, Low, Info, or
+  open finding remains. Runner-core, artifact, sandbox, bundle, terminal, and
+  lesson-role protections remain resolved; D5 L1 remains mitigated, D5 L2/L3
+  remain resolved, D4 A1/A2 and the plain-owner-shell condition remain accepted
+  follow-ups. Final verdict: SAFE TO MAKE LIVE for the documented direct-
+  loopback single-worker deployment; wider, proxy-adjacent, or multi-user
+  deployment NO. Static bridge/client activation remains later scope. Live
+  restart is owner-only and was not performed.
 
 - [x] 2026-07-22 — commits after `0ea44d8` on
   `fix/36-f2-editor-backend`; LANDED via merge commit `be3f9ce`, whose tree is
