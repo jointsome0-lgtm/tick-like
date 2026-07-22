@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import tempfile
 import time
@@ -230,6 +231,7 @@ async def matrix() -> dict[str, object]:
             .replace("__PRIVATE_SENTINEL__", str(private_sentinel))
             .replace("__OTHER_BUNDLE__", str(other_bundle))
             .replace("__CURRENT_BUNDLE__", str(bundle))
+            .replace("__HOST_NETNS__", str(os.stat("/proc/self/ns/net").st_ino))
             .encode("utf-8")
         )
         isolation = await run(

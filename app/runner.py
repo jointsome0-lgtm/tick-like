@@ -212,7 +212,7 @@ class RunnerRequest:
     snapshot: bytes
     bundle_dir: str
     bundle_root: str
-    private_root: str | None = None
+    private_root: str
     private_masks: tuple[str, ...] = ()
 
 
@@ -311,6 +311,8 @@ class RunnerService:
                 return Admission(job, True)
             if not self._accepting:
                 raise RunnerShuttingDownError("runner service is shutting down")
+            if not request.private_root:
+                raise RunnerUnavailableError("runner private instance root is required")
             spec = self._registry.get(request.runner_id)
             if spec is None:
                 raise UnknownRunnerError(request.runner_id)

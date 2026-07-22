@@ -23,6 +23,7 @@ USER_HOME = "/home/aina"
 RUNNER_WORKDIR = "/tmp/ephemeris-runner"
 RUNTIME_DIR = "/run"
 SYSTEMD_RUN = "/usr/bin/systemd-run"
+EPHEMERIS_CHECKOUT_ROOT = str(Path(__file__).resolve().parents[1])
 
 RUNNER_SCRATCH_BYTES = 64 * 1024 * 1024
 RUNNER_HOME_BYTES = 256 * 1024 * 1024
@@ -227,8 +228,11 @@ def build_sandbox_argv(
         _pure_private_root(private_root, bundle_root)
         if private_root is not None else None
     )
+    if profile == "lesson-runner" and private is None:
+        raise ValueError("lesson-runner requires the private instance root")
     mask_roots = list(dict.fromkeys(
         [*([private] if private is not None else []),
+         *([EPHEMERIS_CHECKOUT_ROOT] if profile == "lesson-runner" else []),
          *(_pure_mask_root(root) for root in private_masks)]
     ))
     if profile == "lesson-runner":
@@ -298,7 +302,12 @@ def build_sandbox_argv(
             if profile == "lesson-learner"
             else (*_COMMON_HOME_MOUNTS, *_RUNNER_HOME_MOUNTS)
         )
-        for root in mask_roots:
+        for index, root in enumerate(mask_roots):
+            if any(
+                Path(root).is_relative_to(Path(parent))
+                for parent in mask_roots[:index]
+            ):
+                continue
             if _needs_private_mask(root, rebound):
                 argv.extend(["--tmpfs", root])
 

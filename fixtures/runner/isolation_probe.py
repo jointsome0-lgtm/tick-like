@@ -1,13 +1,13 @@
 # Vera Example invented runner fixture.
 import json
 import os
-import socket
 from pathlib import Path
 
 REPO = Path("__EPHEMERIS_REPO__")
 PRIVATE_SENTINEL = Path("__PRIVATE_SENTINEL__")
 OTHER_BUNDLE = Path("__OTHER_BUNDLE__")
 BUNDLE = Path("__CURRENT_BUNDLE__")
+HOST_NETNS = int("__HOST_NETNS__")
 
 
 def writable(path: Path) -> bool:
@@ -20,15 +20,7 @@ def writable(path: Path) -> bool:
         return False
 
 
-sock = socket.socket()
-sock.settimeout(0.25)
-try:
-    sock.connect(("127.0.0.1", 9))
-    network_absent = False
-except OSError:
-    network_absent = True
-finally:
-    sock.close()
+network_absent = os.stat("/proc/self/ns/net").st_ino != HOST_NETNS
 
 scratch = Path.cwd()
 home = Path.home()

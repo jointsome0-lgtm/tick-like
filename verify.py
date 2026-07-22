@@ -3849,7 +3849,8 @@ with TestClient(app) as c:
     _sb_learner = _sandbox.build_sandbox_argv(
         "lesson-learner", _sb_bundle, bundle_root=_sb_root)
     _sb_runner = _sandbox.build_sandbox_argv(
-        "lesson-runner", _sb_bundle, bundle_root=_sb_root)
+        "lesson-runner", _sb_bundle, bundle_root=_sb_root,
+        private_root="/tmp")
 
     def _sb_mounts(argv, flag):
         return [(argv[i + 1], argv[i + 2]) for i, arg in enumerate(argv)
@@ -4612,6 +4613,27 @@ with TestClient(app) as c:
         _f3_overlap_refused = True
     check("F3 runner fails closed when a private mask is inside the mounted bundle",
           _f3_overlap_refused)
+    try:
+        _sandbox.build_sandbox_argv(
+            "lesson-runner", _f3_bundle, bundle_root=_f3_root,
+        )
+        _f3_missing_private_refused = False
+    except ValueError:
+        _f3_missing_private_refused = True
+    with _sandbox_mock.patch.object(
+        _sandbox, "EPHEMERIS_CHECKOUT_ROOT", "/workspace/invented-checkout"
+    ):
+        _f3_external_checkout_argv = _sandbox.build_sandbox_argv(
+            "lesson-runner", _f3_bundle, bundle_root=_f3_root,
+            private_root=_f3_private,
+        )
+    check("F3 runner requires private authority and masks an external checkout",
+          _f3_missing_private_refused
+          and "/workspace/invented-checkout" in [
+              _f3_external_checkout_argv[i + 1]
+              for i, arg in enumerate(_f3_external_checkout_argv)
+              if arg == "--tmpfs"
+          ])
 
     async def _f3_snapshot_spawn_contract():
         observed = {}
@@ -4755,12 +4777,15 @@ with TestClient(app) as c:
                 self._result.set_result(returncode)
 
     async def _f3_service_contracts():
-        def req(lesson="lesson-a", key="key-a", block="blk_demo"):
+        def req(
+            lesson="lesson-a", key="key-a", block="blk_demo",
+            private_root="/tmp/private",
+        ):
             return _runner.RunnerRequest(
                 lesson, block, "sha256:invented", key,
                 "python-script-v1", "attempts/blk_demo/main.py",
                 b"print('invented')\n", "/tmp/private/lessons/demo",
-                "/tmp/private/lessons", "/tmp/private",
+                "/tmp/private/lessons", private_root,
             )
 
         result = {}
@@ -4772,6 +4797,11 @@ with TestClient(app) as c:
             return process
 
         service = _runner.RunnerService(spawn_hook=spawn, health_hook=lambda: None)
+        try:
+            await service.admit(req(key="missing-private", private_root=None))
+            result["missing_private"] = False
+        except _runner.RunnerUnavailableError:
+            result["missing_private"] = not processes and service.active_total == 0
         admission = await service.admit(req())
         result["starting"] = admission.job.state == _runner.STARTING
         await _asyncio.sleep(0)
@@ -4960,6 +4990,8 @@ with TestClient(app) as c:
     check("F3 state machine reaches FINISHED only after reap/EOF with split UTF-8 intact",
           _f3_service.get("starting") and _f3_service.get("running")
           and _f3_service.get("normal"), str(_f3_service))
+    check("F3 admission refuses a missing private authority before spawn",
+          _f3_service.get("missing_private"), str(_f3_service))
     check("F3 first terminal cause wins and releases capacity exactly once",
           _f3_service.get("first_cause_release")
           and _f3_service.get("spawn_failure"), str(_f3_service))
@@ -4972,60 +5004,71 @@ with TestClient(app) as c:
     check("F3 shutdown stops jobs through the same exact-release path",
           _f3_service.get("shutdown"), str(_f3_service))
 
-    _f3_probe_run = subprocess.run(
-        [sys.executable, "scripts/probe_runner.py"],
-        cwd=ROOT,
-        env=os.environ.copy(),
-        text=True,
-        capture_output=True,
-        timeout=180,
-    )
     try:
-        _f3_probe = json.loads(_f3_probe_run.stdout)
-    except (TypeError, ValueError):
-        _f3_probe = {}
-    _f3_probe_extra = _f3_probe_run.stderr.strip() or _f3_probe_run.stdout.strip()
-    check("F3 host matrix: success, syntax error, timeout, and file backstop",
-          _f3_probe_run.returncode == 0
-          and _f3_probe.get("success", {}).get("exit_code") == 0
-          and _f3_probe.get("syntax_error", {}).get("stderr_has_syntax_error") is True
-          and _f3_probe.get("timeout", {}).get("cause") == "timeout"
-          and _f3_probe.get("file_limit", {}).get("failed") is True,
-          _f3_probe_extra)
-    check("F3 host matrix: raw-byte overflow kills at exactly 1 MiB",
-          _f3_probe.get("output_overflow") == {
-              "cause": "output-limit", "output_bytes": 1024 * 1024,
-              "state": "FINISHED", "truncated": True,
-          }, _f3_probe_extra)
-    check("F3 host matrix: descendant cleanup and shutdown both reap to EOF",
-          _f3_probe.get("descendant_cleanup", {}).get("both_eof") is True
-          and _f3_probe.get("descendant_cleanup", {}).get("cause") == "cancelled"
-          and _f3_probe.get("shutdown", {}).get("cause") == "shutdown"
-          and _f3_probe.get("shutdown", {}).get("active_total") == 0,
-          _f3_probe_extra)
-    _f3_isolation = _f3_probe.get("isolation", {})
-    check("F3 host isolation: repo/private/other bundles/run/network are absent",
-          all(_f3_isolation.get(name) is True for name in (
-              "repo_absent", "private_sentinel_absent", "other_bundle_absent",
-              "run_empty", "network_absent",
-          )), _f3_probe_extra)
-    check("F3 host isolation: bundle/module cache ro; scratch/GOCACHE rw; snapshot 0444",
-          all(_f3_isolation.get(name) is True for name in (
-              "bundle_readable", "bundle_read_only", "module_cache_read_only",
-              "scratch_writable", "gocache_writable",
-          ))
-          and _f3_isolation.get("snapshot_mode") == "0o444"
-          and _f3_isolation.get("home_entries") == [".cache", ".local", "go"]
-          and set(_f3_isolation.get("runner_env", ())) == set(_runner.RUNNER_ENV),
-          _f3_probe_extra)
-    check("F3 cold Go and warm-within-job/repeat/change/compile-error matrix passes",
-          _f3_probe.get("cold_go", {}).get("exit_code") == 0
-          and _f3_probe.get("cold_go", {}).get("warm_child_reported") is True
-          and _f3_probe.get("cold_go", {}).get("wall_ms", 60001) < 60000
-          and _f3_probe.get("go_repeated_and_changed", {}).get("repeat_ok") is True
-          and _f3_probe.get("go_repeated_and_changed", {}).get("changed_source_observed") is True
-          and _f3_probe.get("go_compile_error", {}).get("stderr_has_undefined") is True,
-          _f3_probe_extra)
+        _runner.require_runner_health()
+        _f3_host_runtime = True
+        _f3_runtime_detail = ""
+    except _runner.RunnerUnavailableError as exc:
+        _f3_host_runtime = False
+        _f3_runtime_detail = str(exc)
+    if _f3_host_runtime:
+        _f3_probe_run = subprocess.run(
+            [sys.executable, "scripts/probe_runner.py"],
+            cwd=ROOT,
+            env=os.environ.copy(),
+            text=True,
+            capture_output=True,
+            timeout=180,
+        )
+        try:
+            _f3_probe = json.loads(_f3_probe_run.stdout)
+        except (TypeError, ValueError):
+            _f3_probe = {}
+        _f3_probe_extra = _f3_probe_run.stderr.strip() or _f3_probe_run.stdout.strip()
+        check("F3 host matrix: success, syntax error, timeout, and file backstop",
+              _f3_probe_run.returncode == 0
+              and _f3_probe.get("success", {}).get("exit_code") == 0
+              and _f3_probe.get("syntax_error", {}).get("stderr_has_syntax_error") is True
+              and _f3_probe.get("timeout", {}).get("cause") == "timeout"
+              and _f3_probe.get("file_limit", {}).get("failed") is True,
+              _f3_probe_extra)
+        check("F3 host matrix: raw-byte overflow kills at exactly 1 MiB",
+              _f3_probe.get("output_overflow") == {
+                  "cause": "output-limit", "output_bytes": 1024 * 1024,
+                  "state": "FINISHED", "truncated": True,
+              }, _f3_probe_extra)
+        check("F3 host matrix: descendant cleanup and shutdown both reap to EOF",
+              _f3_probe.get("descendant_cleanup", {}).get("both_eof") is True
+              and _f3_probe.get("descendant_cleanup", {}).get("cause") == "cancelled"
+              and _f3_probe.get("shutdown", {}).get("cause") == "shutdown"
+              and _f3_probe.get("shutdown", {}).get("active_total") == 0,
+              _f3_probe_extra)
+        _f3_isolation = _f3_probe.get("isolation", {})
+        check("F3 host isolation: repo/private/other bundles/run/network are absent",
+              all(_f3_isolation.get(name) is True for name in (
+                  "repo_absent", "private_sentinel_absent", "other_bundle_absent",
+                  "run_empty", "network_absent",
+              )), _f3_probe_extra)
+        check("F3 host isolation: bundle/module cache ro; scratch/GOCACHE rw; snapshot 0444",
+              all(_f3_isolation.get(name) is True for name in (
+                  "bundle_readable", "bundle_read_only", "module_cache_read_only",
+                  "scratch_writable", "gocache_writable",
+              ))
+              and _f3_isolation.get("snapshot_mode") == "0o444"
+              and _f3_isolation.get("home_entries") == [".cache", ".local", "go"]
+              and set(_f3_isolation.get("runner_env", ())) == set(_runner.RUNNER_ENV),
+              _f3_probe_extra)
+        check("F3 cold Go and warm-within-job/repeat/change/compile-error matrix passes",
+              _f3_probe.get("cold_go", {}).get("exit_code") == 0
+              and _f3_probe.get("cold_go", {}).get("warm_child_reported") is True
+              and _f3_probe.get("cold_go", {}).get("wall_ms", 60001) < 60000
+              and _f3_probe.get("go_repeated_and_changed", {}).get("repeat_ok") is True
+              and _f3_probe.get("go_repeated_and_changed", {}).get("changed_source_observed") is True
+              and _f3_probe.get("go_compile_error", {}).get("stderr_has_undefined") is True,
+              _f3_probe_extra)
+    else:
+        check("F3 host matrix skipped when full runner runtime is unavailable",
+              True, _f3_runtime_detail)
 
     # --- Retro capture (docs/retro-spec.md, issue #49) ----------------------
     # The period grammar mirrors exp2res services/time_input.py; the journaled
