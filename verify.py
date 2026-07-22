@@ -5025,6 +5025,11 @@ with TestClient(app) as c:
     async def _f3_snapshot_spawn_contract():
         observed = {}
 
+        def invented_module_cache_fd():
+            return os.open(
+                "/tmp", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+            )
+
         async def successful_spawn(*args, **kwargs):
             fd = kwargs["pass_fds"][0]
             observed["fd"] = fd
@@ -5037,6 +5042,10 @@ with TestClient(app) as c:
 
         with _sandbox_mock.patch.object(_sandbox, "require_sandbox_runtime"), \
                 _sandbox_mock.patch.object(_sandbox, "require_runner_scope_runtime"), \
+                _sandbox_mock.patch.object(
+                    _sandbox, "open_runner_module_cache_fd",
+                    side_effect=invented_module_cache_fd,
+                ), \
                 _sandbox_mock.patch.object(
                     _sandbox, "_systemd_no_expand_option", return_value=()
                 ), \
@@ -5071,6 +5080,10 @@ with TestClient(app) as c:
 
         with _sandbox_mock.patch.object(_sandbox, "require_sandbox_runtime"), \
                 _sandbox_mock.patch.object(_sandbox, "require_runner_scope_runtime"), \
+                _sandbox_mock.patch.object(
+                    _sandbox, "open_runner_module_cache_fd",
+                    side_effect=invented_module_cache_fd,
+                ), \
                 _sandbox_mock.patch.object(
                     _sandbox, "_systemd_no_expand_option", return_value=()
                 ), \
