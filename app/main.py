@@ -25,8 +25,12 @@ from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
 from .db import get_conn, init_db, is_not_future, is_valid_date, now_iso, today_str
+from .request_body import PayloadTooLarge, read_capped
 from .security import install_security
-from .services import attempts, bundle_schema, calendar_events, checkins, export, focus, items, lessons, lists, quickadd, retro, stats, tasks
+from .services import (
+    artifacts, attempts, bundle_schema, calendar_events, checkins, export,
+    focus, items, lessons, lists, quickadd, retro, stats, tasks,
+)
 from .terminal import client_is_local, setup_terminal, shutdown_terminal
 
 log = logging.getLogger("activity_ledger")
@@ -1058,6 +1062,10 @@ def get_learn(
             selected["bundle"]["stale_selection"] or selected["entry"],
             meta=True,
         )
+        # F1 endpoint discovery.  The template guards this field so a running
+        # pre-F backend rendering the new working-tree template omits the
+        # capability instead of advertising a route it does not have.
+        selected["artifacts_url"] = f"/learn/lessons/{selected['id']}/blocks"
         # D2: the iframe sandbox attribute follows the effective profile
         # (same owner as the header-level directive); the profile is folded
         # into the version token, so a flip reloads the frame and the parent
@@ -1324,6 +1332,118 @@ def get_lesson_preview_meta(lesson_id: int, entry: str | None = None):
         "preview_url": _lesson_preview_url(lesson_id, info["entry"], exists=info["exists"]),
         "file_url": _lesson_preview_url(lesson_id, info["entry"]),
     })
+
+
+# --- lesson artifacts (phase F1 editor backend) ----------------------------
+
+
+def _artifact_refusal(exc: artifacts.ArtifactError) -> JSONResponse:
+    headers = {"Cache-Control": "no-store"}
+    if exc.status == 429:
+        headers["Retry-After"] = str(
+            int(exc.fields.get("retry_after", artifacts.RATE_WINDOW_SECONDS))
+        )
+    return JSONResponse(
+        {"ok": False, "error": exc.code, "detail": exc.detail, **exc.fields},
+        status_code=exc.status,
+        headers=headers,
+    )
+
+
+def _artifact_lesson(
+    conn, *, lesson_id: int | None = None, slug: str | None = None
+) -> dict:
+    lesson = (
+        lessons.get_lesson_by_slug(conn, slug)
+        if slug is not None
+        else lessons.get_lesson(conn, lesson_id)
+    )
+    if lesson is None:
+        raise artifacts.ArtifactError("unknown-lesson", 404, "unknown lesson")
+    return lesson
+
+
+def _get_artifact(
+    block_id: str, *, lesson_id: int | None = None, slug: str | None = None
+) -> JSONResponse:
+    conn = get_conn()
+    try:
+        lesson = _artifact_lesson(conn, lesson_id=lesson_id, slug=slug)
+        result = artifacts.get_artifact(lesson, block_id)
+    except artifacts.ArtifactError as exc:
+        return _artifact_refusal(exc)
+    finally:
+        conn.close()
+    return JSONResponse({"ok": True, **result}, headers={"Cache-Control": "no-store"})
+
+
+async def _save_artifact(
+    request: Request,
+    block_id: str,
+    *,
+    lesson_id: int | None = None,
+    slug: str | None = None,
+) -> JSONResponse:
+    content_type = request.headers.get("content-type", "")
+    if content_type.split(";", 1)[0].strip().lower() != "application/json":
+        return _artifact_refusal(artifacts.ArtifactError(
+            "unsupported-media-type", 415, "artifact saves are application/json"
+        ))
+    try:
+        body = await read_capped(request, artifacts.MAX_BODY_BYTES)
+    except PayloadTooLarge:
+        return _artifact_refusal(artifacts.ArtifactError(
+            "payload-too-large", 413, "request body too large"
+        ))
+    except ValueError:
+        return _artifact_refusal(artifacts.ArtifactError(
+            "invalid-request", 400, "bad Content-Length"
+        ))
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return _artifact_refusal(artifacts.ArtifactError(
+            "invalid-json", 400, "body is not valid JSON"
+        ))
+    if not isinstance(payload, dict):
+        return _artifact_refusal(artifacts.ArtifactError(
+            "invalid-json", 400, "body must be a JSON object"
+        ))
+
+    def work() -> dict:
+        conn = get_conn()
+        try:
+            lesson = _artifact_lesson(conn, lesson_id=lesson_id, slug=slug)
+            return artifacts.save_artifact(conn, lesson, block_id, payload)
+        finally:
+            conn.close()
+
+    try:
+        result = await run_in_threadpool(work)
+    except artifacts.ArtifactError as exc:
+        return _artifact_refusal(exc)
+    return JSONResponse({"ok": True, **result}, headers={"Cache-Control": "no-store"})
+
+
+# Registered before the {lesson_id} routes so "by-slug" is not parsed as id.
+@app.get("/learn/lessons/by-slug/{slug}/blocks/{block_id}/file")
+def get_lesson_artifact_by_slug(slug: str, block_id: str):
+    return _get_artifact(block_id, slug=slug)
+
+
+@app.post("/learn/lessons/by-slug/{slug}/blocks/{block_id}/file")
+async def post_lesson_artifact_by_slug(request: Request, slug: str, block_id: str):
+    return await _save_artifact(request, block_id, slug=slug)
+
+
+@app.get("/learn/lessons/{lesson_id}/blocks/{block_id}/file")
+def get_lesson_artifact(lesson_id: int, block_id: str):
+    return _get_artifact(block_id, lesson_id=lesson_id)
+
+
+@app.post("/learn/lessons/{lesson_id}/blocks/{block_id}/file")
+async def post_lesson_artifact(request: Request, lesson_id: int, block_id: str):
+    return await _save_artifact(request, block_id, lesson_id=lesson_id)
 
 
 # --- lesson attempts (D4, learn-bundle-spec.md §6 + docs/lesson-attempts-api.md)

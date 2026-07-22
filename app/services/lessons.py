@@ -401,6 +401,33 @@ def _finding_views(read: bundle_schema.ManifestRead) -> list[dict]:
     ]
 
 
+def _bridge_block_views(
+    read: bundle_schema.ManifestRead, page_id: str
+) -> list[dict]:
+    """Block identities for one armed page, with health folded into Run.
+
+    The manifest reader already applies the registry and suffix gates.  Health
+    is the final process-local condition, and is consulted only when at least
+    one block could otherwise run so ordinary preview reads do not start the
+    runner probe unnecessarily.
+    """
+    blocks = [block for block in read.blocks if block["page"] == page_id]
+    healthy = False
+    if any(block["run_enabled"] for block in blocks):
+        try:
+            from ..runner import runner_health
+
+            healthy = runner_health().available
+        except Exception:
+            # Metadata is fail-closed: a broken or unavailable health probe
+            # removes Run authority instead of breaking the preview surface.
+            healthy = False
+    return [
+        {"id": block["id"], "run": bool(block["run_enabled"] and healthy)}
+        for block in blocks
+    ]
+
+
 def _resolve_entry(lesson: dict, read: bundle_schema.ManifestRead, entry: str | None) -> str:
     """One owner of the page-selection rule. v2 accepts only declared
     `pages[].path`, compared exactly (§4.1/§4.2) — a normalizable variant
@@ -526,6 +553,9 @@ def _file_info(
                     "questions": [
                         q["id"] for q in read.questions if q["page"] == page_id
                     ],
+                    # F1: file paths stay server-side.  The parent sees only
+                    # block identity and the fail-closed Run affordance.
+                    "blocks": _bridge_block_views(read, page_id),
                 }
     elif exists:
         stat = path.stat()
@@ -574,6 +604,41 @@ def read_bundle(lesson: dict) -> bundle_schema.ManifestRead:
     dual-read every other consumer uses — standard dirs ensured, skeleton
     created only when the manifest is genuinely missing, visible rejects."""
     return _ensure_bundle_manifest(lesson)
+
+
+def read_bundle_readonly(lesson: dict) -> bundle_schema.ManifestRead:
+    """Pure record-time read for phase-F APIs.
+
+    Unlike :func:`read_bundle`, this entry point never creates the lessons
+    root, bundle directory, standard subdirectories, a manifest skeleton, an
+    artifact root, or a legacy flat-file copy.  Missing state is an explicit
+    rejected read so every F caller can fail visibly without turning a GET
+    into a write.
+    """
+    try:
+        lesson_dir = _lesson_dir(lesson["slug"])
+        if not lesson_dir.exists():
+            return bundle_schema.rejected_read(
+                "manifest-unreadable", "lesson bundle directory is missing"
+            )
+        if not _bundle_dir_is_safe(lesson_dir):
+            return bundle_schema.rejected_read(
+                "symlinked-bundle", "lesson bundle dir is not a real directory"
+            )
+        read = bundle_schema.read_manifest_path(
+            _manifest_path(lesson["slug"]),
+            db_lesson=lesson,
+            runner_registry=RUNNER_REGISTRY,
+        )
+    except (KeyError, OSError, LessonError):
+        return bundle_schema.rejected_read(
+            "manifest-unreadable", "lesson bundle cannot be read"
+        )
+    if read is None:
+        return bundle_schema.rejected_read(
+            "manifest-unreadable", "lesson manifest is missing"
+        )
+    return read
 
 
 def hash_bundle_page(lesson: dict, ref: str) -> str | None:

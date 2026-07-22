@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import stat as stat_module
 import subprocess
 import sys
 import tempfile
@@ -1091,6 +1092,8 @@ with TestClient(app) as c:
                   (_v2_dir / "index.html").read_bytes()).hexdigest(),
               # D5: declared questions ride the identity (none on this page)
               "questions": [],
+              # F1: declared editor/run identities ride the armed page too.
+              "blocks": [],
           }
           and _d2_meta["sandbox"] == "allow-scripts")
     _d2_meta_p2 = c.get(
@@ -1795,6 +1798,325 @@ with TestClient(app) as c:
     check("replay bypasses an exhausted window: duplicate, not 429",
           _at_rl_replay.status_code == 200
           and _at_rl_replay.json()["result"] == "duplicate")
+
+    # ---- F1: pure artifact reads + conflict-safe editor backend ------------
+    from app.services import artifacts as artifacts_svc
+    import types as _f1_types
+
+    _f1_conn = get_conn()
+    try:
+        _f1_id = lessons_svc.create_lesson(_f1_conn, "Artifact Editor Demo")
+        _f1 = lessons_svc.get_lesson(_f1_conn, _f1_id)
+    finally:
+        _f1_conn.close()
+    _f1_dir = Path(lessons_svc.LESSONS_DIR) / _f1["slug"]
+    _f1_raw = json.loads((_f1_dir / "lesson.json").read_text(encoding="utf-8"))
+    _f1_page = _f1_raw["pages"][0]["id"]
+    _f1_raw["blocks"] = [
+        {"id": "blk_editor01", "page": _f1_page, "kind": "editor",
+         "file": "attempts/blk_editor01/main.py",
+         "runner_id": "python-script-v1"},
+        {"id": "blk_safe0001", "page": _f1_page, "kind": "editor",
+         "file": "attempts/blk_safe0001/main.py",
+         "runner_id": "python-script-v1"},
+        {"id": "blk_link0001", "page": _f1_page, "kind": "editor",
+         "file": "attempts/blk_link0001/main.py",
+         "runner_id": "python-script-v1"},
+        {"id": "blk_race0001", "page": _f1_page, "kind": "editor",
+         "file": "attempts/blk_race0001/main.py",
+         "runner_id": "python-script-v1"},
+        {"id": "blk_deep0001", "page": _f1_page, "kind": "editor",
+         "file": "attempts/a/b/c/d/e.py",
+         "runner_id": "python-script-v1"},
+    ]
+    bschema.write_manifest(_f1_dir / "lesson.json", _f1_raw)
+    (_f1_dir / "index.html").write_text(
+        "<html>Vera Example editor page</html>", encoding="utf-8")
+    _f1_url = f"/learn/lessons/{_f1_id}/blocks/blk_editor01/file"
+    artifacts_svc._reset_rate_limit()
+
+    # The phase-F reader treats missing bundle state as a refusal and does not
+    # recreate any of the preview path's historical skeleton/directories.
+    _f1_pure_conn = get_conn()
+    try:
+        _f1_pure_id = lessons_svc.create_lesson(
+            _f1_pure_conn, "Artifact Pure Read Demo")
+        _f1_pure = lessons_svc.get_lesson(_f1_pure_conn, _f1_pure_id)
+    finally:
+        _f1_pure_conn.close()
+    _f1_pure_dir = Path(lessons_svc.LESSONS_DIR) / _f1_pure["slug"]
+    _shutil.rmtree(_f1_pure_dir)
+    _f1_pure_get = c.get(
+        f"/learn/lessons/{_f1_pure_id}/blocks/blk_never0001/file")
+    check("F1 pure GET does not create a missing bundle or manifest",
+          _f1_pure_get.status_code == 409
+          and _f1_pure_get.json()["error"] == "manifest-rejected"
+          and not _f1_pure_dir.exists())
+
+    _f1_missing = c.get(_f1_url)
+    check("F1 missing artifact GET is side-effect-free",
+          _f1_missing.status_code == 200
+          and _f1_missing.json() == {
+              "ok": True, "exists": False, "content": "", "size": 0,
+          }
+          and not (_f1_dir / "attempts" / "blk_editor01").exists())
+    check("F1 artifact POST stays behind the B2 write guard",
+          c.post(_f1_url, json={"content": "x", "base_rev": "absent"},
+                 headers={"Origin": "null"}).status_code == 403
+          and not (_f1_dir / "attempts" / "blk_editor01").exists())
+
+    _f1_body1 = "print('Vera Example')\n"
+    _f1_save1 = c.post(
+        _f1_url, json={"content": _f1_body1, "base_rev": "absent"})
+    _f1_saved1 = _f1_save1.json()
+    _f1_file = _f1_dir / "attempts" / "blk_editor01" / "main.py"
+    check("F1 first save publishes mode-safe bytes and records telemetry",
+          _f1_save1.status_code == 200
+          and _f1_saved1["result"] == "saved"
+          and _f1_saved1["event_recorded"] is True
+          and _f1_file.read_text(encoding="utf-8") == _f1_body1
+          and stat_module.S_IMODE(_f1_file.stat().st_mode) == 0o600
+          and _f1_file.stat().st_nlink == 1)
+    _f1_get1 = c.get(_f1_url)
+    check("F1 GET returns strict bytes, size, and their sha256 revision",
+          _f1_get1.status_code == 200
+          and _f1_get1.json()["content"] == _f1_body1
+          and _f1_get1.json()["file_rev"] == _f1_saved1["file_rev"]
+          and _f1_get1.json()["size"] == len(_f1_body1.encode("utf-8")))
+    _f1_alias = c.get(
+        f"/learn/lessons/by-slug/{_f1['slug']}/blocks/blk_editor01/file")
+    check("F1 by-slug artifact alias is the same descriptor-bound read",
+          _f1_alias.status_code == 200
+          and _f1_alias.json()["file_rev"] == _f1_saved1["file_rev"])
+
+    _f1_event_count = len(events_of("lesson_artifact_saved"))
+    _f1_conflict = c.post(
+        _f1_url, json={"content": "print('changed')\n", "base_rev": "absent"})
+    _f1_retry = c.post(
+        _f1_url, json={"content": _f1_body1, "base_rev": "absent"})
+    check("F1 conflict returns the current revision without overwriting",
+          _f1_conflict.status_code == 409
+          and _f1_conflict.json()["error"] == "file-conflict"
+          and _f1_conflict.json()["file_rev"] == _f1_saved1["file_rev"]
+          and _f1_file.read_text(encoding="utf-8") == _f1_body1)
+    check("F1 content-equal retry is unchanged with no write or event",
+          _f1_retry.status_code == 200
+          and _f1_retry.json()["result"] == "unchanged"
+          and _f1_retry.json()["event_recorded"] is False
+          and len(events_of("lesson_artifact_saved")) == _f1_event_count)
+
+    _f1_body2 = "print('saved revision two')\n"
+    _f1_save2 = c.post(
+        _f1_url,
+        json={"content": _f1_body2, "base_rev": _f1_saved1["file_rev"]},
+    )
+    _f1_events = events_of("lesson_artifact_saved")
+    _f1_event2 = json.loads(_f1_events[-1]["payload_json"])
+    check("F1 save event carries identity and metadata but never content",
+          _f1_save2.status_code == 200
+          and _f1_event2["lesson_uid"] == _f1["uid"]
+          and _f1_event2["block_id"] == "blk_editor01"
+          and _f1_event2["file"] == "attempts/blk_editor01/main.py"
+          and _f1_event2["created"] is False
+          and "content" not in _f1_event2
+          and "title" not in _f1_event2)
+
+    # Event failure is observable but cannot roll back the already-durable file.
+    _f1_body3 = "print('telemetry unavailable')\n"
+    with _mock.patch.object(
+            artifacts_svc, "append_event",
+            side_effect=sqlite3.OperationalError("invented event outage")):
+        _f1_event_down = c.post(
+            _f1_url,
+            json={"content": _f1_body3,
+                  "base_rev": _f1_save2.json()["file_rev"]},
+        )
+    check("F1 file-first event failure is visible and leaves saved bytes durable",
+          _f1_event_down.status_code == 200
+          and _f1_event_down.json()["result"] == "saved"
+          and _f1_event_down.json()["event_recorded"] is False
+          and _f1_file.read_text(encoding="utf-8") == _f1_body3)
+
+    # Stored bytes are descriptor-bound: over-limit, invalid UTF-8, and a
+    # multi-link regular file each have their distinct fail-closed outcomes.
+    _f1_file.write_bytes(b"x" * (artifacts_svc.MAX_FILE_BYTES + 1))
+    check("F1 GET refuses an oversized stored artifact before buffering past cap",
+          c.get(_f1_url).status_code == 413
+          and c.get(_f1_url).json()["error"] == "file-too-large")
+    _f1_file.write_bytes(b"\xff")
+    _f1_invalid = c.get(_f1_url)
+    check("F1 GET refuses invalid UTF-8 without replacement characters",
+          _f1_invalid.status_code == 422
+          and _f1_invalid.json()["error"] == "invalid-encoding"
+          and "content" not in _f1_invalid.json())
+    _f1_bad_rev = "sha256:" + hashlib.sha256(b"\xff").hexdigest()
+    _f1_repair = c.post(
+        _f1_url, json={"content": _f1_body3, "base_rev": _f1_bad_rev})
+    _f1_other = _f1_dir / "attempts" / "linked-copy.py"
+    _os.link(_f1_file, _f1_other)
+    _f1_linked = c.get(_f1_url)
+    check("F1 safe-file rule refuses a multi-link regular descriptor",
+          _f1_repair.status_code == 200
+          and _f1_linked.status_code == 409
+          and _f1_linked.json()["error"] == "unsafe-file")
+    _f1_other.unlink()
+
+    _f1_outside = _f1_dir.parent / "invented-artifact-outside"
+    _f1_outside.mkdir()
+    _f1_link_parent = _f1_dir / "attempts" / "blk_link0001"
+    _f1_link_parent.symlink_to(_f1_outside, target_is_directory=True)
+    _f1_link_url = f"/learn/lessons/{_f1_id}/blocks/blk_link0001/file"
+    _f1_link_get = c.get(_f1_link_url)
+    _f1_link_post = c.post(
+        _f1_link_url, json={"content": "outside?", "base_rev": "absent"})
+    check("F1 no-follow traversal refuses a symlinked parent on GET and save",
+          _f1_link_get.status_code == 409
+          and _f1_link_post.status_code == 409
+          and not (_f1_outside / "main.py").exists())
+    _f1_link_parent.unlink()
+
+    _f1_deep_url = f"/learn/lessons/{_f1_id}/blocks/blk_deep0001/file"
+    _f1_deep = c.post(
+        _f1_deep_url, json={"content": "deep", "base_rev": "absent"})
+    check("F1 depth guard rejects undiscoverable writes without making parents",
+          _f1_deep.status_code == 422
+          and _f1_deep.json()["error"] == "undiscoverable-path"
+          and not (_f1_dir / "attempts" / "a").exists())
+
+    # Deterministic parent-swap harness: move the checked destination parent,
+    # plant a symlink at its former path immediately before replace, and prove
+    # the dirfd-relative publication stays on the pinned inode.
+    _f1_race_dir = _f1_dir / "attempts" / "blk_race0001"
+    _f1_race_dir.mkdir()
+    _f1_race_held = _f1_dir / "attempts" / "blk_race0001-held"
+    _f1_real_replace = artifacts_svc.os.replace
+    _f1_swapped = {"done": False}
+
+    def _f1_swap_replace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+        if dst == "main.py" and dst_dir_fd is not None:
+            _os.rename(_f1_race_dir, _f1_race_held)
+            _f1_race_dir.symlink_to(_f1_outside, target_is_directory=True)
+            try:
+                result = _f1_real_replace(
+                    src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+                _f1_swapped["done"] = True
+                return result
+            finally:
+                _f1_race_dir.unlink()
+                _os.rename(_f1_race_held, _f1_race_dir)
+        return _f1_real_replace(
+            src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+
+    with _mock.patch.object(artifacts_svc.os, "replace", _f1_swap_replace):
+        _f1_race = c.post(
+            f"/learn/lessons/{_f1_id}/blocks/blk_race0001/file",
+            json={"content": "print('pinned')\n", "base_rev": "absent"},
+        )
+    check("F1 mutation harness never publishes through a raced parent swap",
+          _f1_race.status_code == 200 and _f1_swapped["done"]
+          and (_f1_race_dir / "main.py").read_text(encoding="utf-8")
+              == "print('pinned')\n"
+          and not (_f1_outside / "main.py").exists())
+
+    # A direct writer changing the current descriptor after compare but before
+    # publication is caught by the final identity check; its bytes win.
+    _f1_current = c.get(_f1_url).json()["file_rev"]
+    _f1_real_stage = artifacts_svc._stage_temp
+
+    def _f1_stage_then_mutate(parent_fd, data):
+        name = _f1_real_stage(parent_fd, data)
+        _f1_file.write_text("direct writer wins\n", encoding="utf-8")
+        return name
+
+    with _mock.patch.object(
+            artifacts_svc, "_stage_temp", _f1_stage_then_mutate):
+        _f1_identity_conflict = c.post(
+            _f1_url,
+            json={"content": "api writer loses\n", "base_rev": _f1_current},
+        )
+    check("F1 final descriptor identity re-check catches a pre-replace mutation",
+          _f1_identity_conflict.status_code == 409
+          and _f1_identity_conflict.json()["error"] == "file-conflict"
+          and _f1_file.read_text(encoding="utf-8") == "direct writer wins\n"
+          and not list(_f1_file.parent.glob(".artifact-*.tmp")))
+
+    # Admission and semantic caps are separate: one is a streaming body cap,
+    # the other is the 64-KiB raw file contract.
+    _f1_huge_body = c.post(
+        _f1_url,
+        content=json.dumps({
+            "content": "x" * (artifacts_svc.MAX_BODY_BYTES + 1),
+            "base_rev": "absent",
+        }).encode("utf-8"),
+        headers={"content-type": "application/json"},
+    )
+    _f1_huge_file = c.post(
+        _f1_url,
+        json={"content": "x" * (artifacts_svc.MAX_FILE_BYTES + 1),
+              "base_rev": "absent"},
+    )
+    check("F1 capped-stream admission refuses a body over 512 KiB",
+          _f1_huge_body.status_code == 413
+          and _f1_huge_body.json()["error"] == "payload-too-large")
+    check("F1 save refuses content over 64 KiB by raw UTF-8 bytes",
+          _f1_huge_file.status_code == 413
+          and _f1_huge_file.json()["error"] == "file-too-large")
+
+    artifacts_svc._reset_rate_limit()
+    _f1_rate_max = artifacts_svc.RATE_MAX_PER_WINDOW
+    artifacts_svc.RATE_MAX_PER_WINDOW = 1
+    try:
+        _f1_same1 = c.post(
+            _f1_url,
+            json={"content": "direct writer wins\n", "base_rev": "absent"},
+        )
+        _f1_same2 = c.post(
+            _f1_url,
+            json={"content": "direct writer wins\n", "base_rev": "absent"},
+        )
+        _f1_charge = c.post(
+            _f1_url, json={"content": "new bytes", "base_rev": "absent"})
+        _f1_rate_hit = c.post(
+            _f1_url, json={"content": "more bytes", "base_rev": "absent"})
+    finally:
+        artifacts_svc.RATE_MAX_PER_WINDOW = _f1_rate_max
+        artifacts_svc._reset_rate_limit()
+    check("F1 unchanged saves refund the per-lesson rate slot",
+          _f1_same1.json().get("result") == "unchanged"
+          and _f1_same2.json().get("result") == "unchanged")
+    check("F1 conflicts stay charged and rate-limited itself is uncharged",
+          _f1_charge.status_code == 409
+          and _f1_rate_hit.status_code == 429
+          and _f1_rate_hit.json()["error"] == "rate-limited"
+          and _f1_rate_hit.headers.get("retry-after") is not None)
+
+    with _mock.patch(
+            "app.runner.runner_health",
+            return_value=_f1_types.SimpleNamespace(available=True)):
+        _f1_meta = c.get(
+            f"/learn/lessons/{_f1_id}/preview-meta",
+            params={"entry": "index.html"},
+        ).json()
+        _f1_learn = c.get(f"/learn?lesson={_f1_id}").text
+    with _mock.patch(
+            "app.runner.runner_health",
+            return_value=_f1_types.SimpleNamespace(available=False)):
+        _f1_unhealthy_meta = c.get(
+            f"/learn/lessons/{_f1_id}/preview-meta",
+            params={"entry": "index.html"},
+        ).json()
+    check("F1 armed metadata exposes block ids and health-gated run flags only",
+          _f1_meta["bridge_page"]["blocks"][0]
+              == {"id": "blk_editor01", "run": True}
+          and all("file" not in block for block in _f1_meta["bridge_page"]["blocks"])
+          and not any(
+              block["run"]
+              for block in _f1_unhealthy_meta["bridge_page"]["blocks"]
+          ))
+    check("F1 Learn template advertises the guarded artifact route prefix",
+          f'data-artifacts-url="/learn/lessons/{_f1_id}/blocks"' in _f1_learn
+          and "{% if selected.artifacts_url is defined %}"
+              in (ROOT / "app/templates/learn.html").read_text(encoding="utf-8"))
 
     # ---- D5: Check through the bridge — parent derivation surface, byte-
     # bound page serving, attempt operation (lesson-bridge-abi.md §3.1) ----
