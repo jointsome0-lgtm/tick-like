@@ -514,6 +514,13 @@ def _read_v2(
     if "identity-mismatch" in read.codes():
         read.profile = PROFILE_LEGACY  # render as legacy until resolved (§9.2)
 
+    # A registered runner is necessary but not sufficient authority. Rejected
+    # manifests and every fail-closed legacy profile must keep editor blocks
+    # visible while withholding the Run affordance (§5).
+    if read.rejected or read.effective_profile != PROFILE_INTERACTIVE:
+        for block in read.blocks:
+            block["run_enabled"] = False
+
     updated = raw.get("updated_by_agent_at")
     if updated is not None:
         if not isinstance(updated, str):

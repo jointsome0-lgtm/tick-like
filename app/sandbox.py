@@ -154,11 +154,6 @@ _LEARNER_HOME_MOUNTS = (
                "warm Go build cache for offline learner builds"),
 )
 
-_RUNNER_HOME_MOUNTS = (
-    _HomeMount("--ro-bind", GO_MODULE_CACHE_ROOT,
-               "warm read-only Go module cache for offline single-file runs"),
-)
-
 _PROFILES: tuple[SandboxProfile, ...] = (
     "lesson-agent", "lesson-learner", "lesson-runner",
 )
@@ -258,6 +253,7 @@ def build_sandbox_argv(
     private_masks: Sequence[str | os.PathLike[str]] = (),
     snapshot_fd: int | None = None,
     snapshot_name: str | None = None,
+    module_cache_fd: int | None = None,
 ) -> list[str]:
     """Purely build the bubblewrap prefix for ``profile`` and ``bundle_dir``.
 
@@ -276,6 +272,10 @@ def build_sandbox_argv(
     )
     if profile == "lesson-runner" and private is None:
         raise ValueError("lesson-runner requires the private instance root")
+    if profile == "lesson-runner" and (module_cache_fd is None or module_cache_fd < 0):
+        raise ValueError("lesson-runner requires an open Go module-cache fd")
+    if profile != "lesson-runner" and module_cache_fd is not None:
+        raise ValueError("module-cache fd is valid only for lesson-runner")
     mask_roots = list(dict.fromkeys(
         [*([private] if private is not None else []),
          *([EPHEMERIS_CHECKOUT_ROOT] if profile == "lesson-runner" else []),
@@ -340,18 +340,18 @@ def build_sandbox_argv(
             "--dir", f"{USER_HOME}/go",
             "--dir", f"{USER_HOME}/go/pkg",
         ])
-        mounts.extend(_RUNNER_HOME_MOUNTS)
+        mounts.append(_HomeMount(
+            "--ro-bind-fd", GO_MODULE_CACHE_ROOT,
+            "descriptor-bound read-only Go module cache for offline single-file runs",
+            str(module_cache_fd),
+        ))
     for mount in mounts:
         argv.extend(mount.argv())
 
     if profile in ("lesson-learner", "lesson-runner"):
         # Apply private masks after learner cache/tool re-binds so a private
         # instance nested below one of those paths cannot be reopened by them.
-        rebound = (
-            (*_COMMON_HOME_MOUNTS, *_LEARNER_HOME_MOUNTS)
-            if profile == "lesson-learner"
-            else (*_COMMON_HOME_MOUNTS, *_RUNNER_HOME_MOUNTS)
-        )
+        rebound = tuple(mounts)
         for index, root in enumerate(mask_roots):
             if any(
                 Path(root).is_relative_to(Path(parent))
@@ -517,6 +517,10 @@ def _snapshot_memfd(snapshot: bytes) -> int:
     """Create a sealed, rewinded memfd and verify its readable byte length."""
     if not isinstance(snapshot, bytes):
         raise TypeError("runner snapshot must be bytes")
+    if len(snapshot) > RUNNER_FILE_BYTES:
+        raise ValueError(
+            f"runner snapshot exceeds the {RUNNER_FILE_BYTES}-byte file ceiling"
+        )
     flags = os.MFD_CLOEXEC | getattr(os, "MFD_ALLOW_SEALING", 0)
     fd = os.memfd_create("ephemeris-runner-snapshot", flags)
     try:
@@ -550,6 +554,14 @@ def _snapshot_memfd(snapshot: bytes) -> int:
     except BaseException:
         os.close(fd)
         raise
+
+
+def open_runner_module_cache_fd() -> int:
+    """Open the exact cache directory without following a planted root link."""
+    return os.open(
+        GO_MODULE_CACHE_ROOT,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+    )
 
 
 async def spawn_sandboxed(
@@ -589,7 +601,10 @@ async def spawn_sandboxed(
     if profile == "lesson-runner":
         require_runner_scope_runtime()
     snapshot_fd: int | None = None
+    module_cache_fd: int | None = None
     try:
+        if profile == "lesson-runner":
+            module_cache_fd = open_runner_module_cache_fd()
         if snapshot is not None:
             snapshot_fd = _snapshot_memfd(snapshot)
         bwrap_argv = build_sandbox_argv(
@@ -598,6 +613,7 @@ async def spawn_sandboxed(
             private_masks=private_masks,
             snapshot_fd=snapshot_fd,
             snapshot_name=snapshot_name,
+            module_cache_fd=module_cache_fd,
         )
         if profile == "lesson-runner":
             for authority in (bundle_dir, bundle_root, private_root):
@@ -620,8 +636,11 @@ async def spawn_sandboxed(
             if profile == "lesson-runner" else bwrap_argv
         )
         kwargs = {}
-        if snapshot_fd is not None:
-            kwargs["pass_fds"] = (snapshot_fd,)
+        inherited_fds = tuple(
+            fd for fd in (snapshot_fd, module_cache_fd) if fd is not None
+        )
+        if inherited_fds:
+            kwargs["pass_fds"] = inherited_fds
             kwargs["start_new_session"] = True
         spawn_env = dict(env)
         if profile == "lesson-runner":
@@ -650,3 +669,5 @@ async def spawn_sandboxed(
     finally:
         if snapshot_fd is not None:
             os.close(snapshot_fd)
+        if module_cache_fd is not None:
+            os.close(module_cache_fd)

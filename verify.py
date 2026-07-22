@@ -3850,7 +3850,7 @@ with TestClient(app) as c:
         "lesson-learner", _sb_bundle, bundle_root=_sb_root)
     _sb_runner = _sandbox.build_sandbox_argv(
         "lesson-runner", _sb_bundle, bundle_root=_sb_root,
-        private_root="/tmp")
+        private_root="/tmp", module_cache_fd=7)
 
     def _sb_mounts(argv, flag):
         return [(argv[i + 1], argv[i + 2]) for i, arg in enumerate(argv)
@@ -3908,9 +3908,11 @@ with TestClient(app) as c:
     check("E1 argv: lesson-runner ro bundle + isolated tmpfs cwd",
           set(_sb_mounts(_sb_runner, "--ro-bind")) == {
               ("/", "/"),
-              ("/home/aina/go/pkg/mod", "/home/aina/go/pkg/mod"),
               (_sb_bundle, _sb_bundle),
           }
+          and _sb_mounts(_sb_runner, "--ro-bind-fd") == [
+              ("7", "/home/aina/go/pkg/mod")
+          ]
           and not _sb_mounts(_sb_runner, "--bind")
           and _sb_runner[-4:] == ["--dir", _sandbox.RUNNER_WORKDIR,
                                   "--chdir", _sandbox.RUNNER_WORKDIR])
@@ -4531,6 +4533,7 @@ with TestClient(app) as c:
     _f3_manifest = {
         "schema_version": 2,
         "lesson_uid": "1b7e9c9e-4a5d-4f5e-9c6f-2a8b7d3e1f04",
+        "runtime": {"profile": "interactive-local-v1"},
         "entry": "index.html",
         "pages": [{"id": "pg_demo", "path": "index.html"}],
         "artifact_roots": ["attempts"],
@@ -4550,6 +4553,24 @@ with TestClient(app) as c:
           _f3_compatible.blocks[0]["run_enabled"] is True
           and _f3_incompatible.blocks[0]["run_enabled"] is False
           and "incompatible-runner" in _f3_incompatible.codes())
+    _f3_manifest["blocks"][0]["file"] = "attempts/blk_demo/main.py"
+    _f3_legacy_manifest = json.loads(json.dumps(_f3_manifest))
+    _f3_legacy_manifest.pop("runtime")
+    _f3_legacy = bschema.read_manifest_text(
+        json.dumps(_f3_legacy_manifest),
+        runner_registry=_runner_registry.RUNNER_REGISTRY,
+    )
+    _f3_rejected_manifest = json.loads(json.dumps(_f3_manifest))
+    _f3_rejected_manifest.pop("lesson_uid")
+    _f3_rejected = bschema.read_manifest_text(
+        json.dumps(_f3_rejected_manifest),
+        runner_registry=_runner_registry.RUNNER_REGISTRY,
+    )
+    check("F3 fail-closed manifests never grant the Run affordance",
+          _f3_legacy.effective_profile == bschema.PROFILE_LEGACY
+          and _f3_legacy.blocks[0]["run_enabled"] is False
+          and _f3_rejected.rejected
+          and _f3_rejected.blocks[0]["run_enabled"] is False)
     import inspect as _inspect
     _ensure_source = _inspect.getsource(lessons_svc._ensure_bundle_manifest)
     check("F3 lesson manifest reads use the real registry at both call sites",
@@ -4577,6 +4598,7 @@ with TestClient(app) as c:
         private_masks=("/opt/invented-private-db",),
         snapshot_fd=7,
         snapshot_name="main.py",
+        module_cache_fd=8,
     )
     _f3_tmpfs = [
         _f3_runner_argv[i + 1] for i, arg in enumerate(_f3_runner_argv)
@@ -4596,8 +4618,8 @@ with TestClient(app) as c:
           ["--perms", "0444", "--ro-bind-data", "7",
            f"{_sandbox.RUNNER_WORKDIR}/main.py"]
               in [_f3_runner_argv[i:i + 5] for i in range(len(_f3_runner_argv) - 4)]
-          and ("/home/aina/go/pkg/mod", "/home/aina/go/pkg/mod")
-              in _sb_mounts(_f3_runner_argv, "--ro-bind")
+          and ("8", "/home/aina/go/pkg/mod")
+              in _sb_mounts(_f3_runner_argv, "--ro-bind-fd")
           and "/home/aina/.cache/go-build" not in _f3_runner_argv
           and _sb_mounts(_f3_runner_argv, "--ro-bind")[-1]
               == (_f3_bundle, _f3_bundle)
@@ -4607,6 +4629,7 @@ with TestClient(app) as c:
             "lesson-runner", _f3_bundle, bundle_root=_f3_root,
             private_root=_f3_private,
             private_masks=(f"{_f3_bundle}/invented-secret",),
+            module_cache_fd=8,
         )
         _f3_overlap_refused = False
     except ValueError:
@@ -4626,6 +4649,7 @@ with TestClient(app) as c:
         _f3_external_checkout_argv = _sandbox.build_sandbox_argv(
             "lesson-runner", _f3_bundle, bundle_root=_f3_root,
             private_root=_f3_private,
+            module_cache_fd=8,
         )
     check("F3 runner requires private authority and masks an external checkout",
           _f3_missing_private_refused
@@ -4634,6 +4658,33 @@ with TestClient(app) as c:
               for i, arg in enumerate(_f3_external_checkout_argv)
               if arg == "--tmpfs"
           ])
+    with tempfile.TemporaryDirectory(
+        prefix="ephemeris-f3-cache-link-", dir="/tmp"
+    ) as _f3_cache_raw:
+        _f3_cache_root = Path(_f3_cache_raw)
+        _f3_cache_target = _f3_cache_root / "invented-private"
+        _f3_cache_target.mkdir()
+        _f3_cache_link = _f3_cache_root / "module-cache"
+        _f3_cache_link.symlink_to(_f3_cache_target, target_is_directory=True)
+        with _sandbox_mock.patch.object(
+            _sandbox, "GO_MODULE_CACHE_ROOT", str(_f3_cache_link)
+        ):
+            try:
+                _f3_cache_fd = _sandbox.open_runner_module_cache_fd()
+                os.close(_f3_cache_fd)
+                _f3_cache_link_refused = False
+            except OSError:
+                _f3_cache_link_refused = True
+    check("F3 runner refuses a symlinked Go module-cache authority",
+          _f3_cache_link_refused)
+    with _sandbox_mock.patch.object(_sandbox, "RUNNER_FILE_BYTES", 8):
+        try:
+            _sandbox._snapshot_memfd(b"123456789")
+            _f3_oversized_memfd_refused = False
+        except ValueError:
+            _f3_oversized_memfd_refused = True
+    check("F3 snapshot creation enforces the file-size ceiling",
+          _f3_oversized_memfd_refused)
 
     async def _f3_snapshot_spawn_contract():
         observed = {}
@@ -4641,6 +4692,7 @@ with TestClient(app) as c:
         async def successful_spawn(*args, **kwargs):
             fd = kwargs["pass_fds"][0]
             observed["fd"] = fd
+            observed["module_cache_fd"] = kwargs["pass_fds"][1]
             observed["mode"] = os.fstat(fd).st_mode & 0o777
             observed["argv"] = list(args)
             observed["new_session"] = kwargs.get("start_new_session")
@@ -4669,6 +4721,11 @@ with TestClient(app) as c:
             observed["closed_success"] = False
         except OSError:
             observed["closed_success"] = True
+        try:
+            os.fstat(observed["module_cache_fd"])
+            observed["cache_closed_success"] = False
+        except OSError:
+            observed["cache_closed_success"] = True
 
         failed_fd = {}
 
@@ -4755,6 +4812,7 @@ with TestClient(app) as c:
     check("F3 snapshot fd is 0444, passed once, and closed on success/failure",
           _f3_snapshot_spawn["mode"] == 0o444
           and _f3_snapshot_spawn["closed_success"]
+          and _f3_snapshot_spawn["cache_closed_success"]
           and _f3_snapshot_spawn["closed_failure"]
           and _f3_snapshot_spawn["new_session"] is True)
     check("F3 runner refuses symlinked bundle/private authorities before spawn",
@@ -4860,11 +4918,12 @@ with TestClient(app) as c:
         def req(
             lesson="lesson-a", key="key-a", block="blk_demo",
             private_root="/tmp/private",
+            snapshot=b"print('invented')\n",
         ):
             return _runner.RunnerRequest(
                 lesson, block, "sha256:invented", key,
                 "python-script-v1", "attempts/blk_demo/main.py",
-                b"print('invented')\n", "/tmp/private/lessons/demo",
+                snapshot, "/tmp/private/lessons/demo",
                 "/tmp/private/lessons", private_root,
             )
 
@@ -4877,6 +4936,14 @@ with TestClient(app) as c:
             return process
 
         service = _runner.RunnerService(spawn_hook=spawn, health_hook=lambda: None)
+        with _sandbox_mock.patch.object(_runner.sandbox, "RUNNER_FILE_BYTES", 8):
+            try:
+                await service.admit(req(key="oversized", snapshot=b"123456789"))
+                result["oversized_snapshot"] = False
+            except _runner.SnapshotTooLargeError:
+                result["oversized_snapshot"] = (
+                    not processes and service.active_total == 0
+                )
         try:
             await service.admit(req(key="missing-private", private_root=None))
             result["missing_private"] = False
@@ -5071,7 +5138,8 @@ with TestClient(app) as c:
           _f3_service.get("starting") and _f3_service.get("running")
           and _f3_service.get("normal"), str(_f3_service))
     check("F3 admission refuses a missing private authority before spawn",
-          _f3_service.get("missing_private"), str(_f3_service))
+          _f3_service.get("missing_private")
+          and _f3_service.get("oversized_snapshot"), str(_f3_service))
     check("F3 first terminal cause wins and releases capacity exactly once",
           _f3_service.get("first_cause_release")
           and _f3_service.get("spawn_failure"), str(_f3_service))

@@ -82,6 +82,10 @@ class IncompatibleRunnerError(RunnerError):
     code = "incompatible-runner"
 
 
+class SnapshotTooLargeError(RunnerError):
+    code = "snapshot-too-large"
+
+
 class IdempotencyConflictError(RunnerError):
     code = "idempotency-conflict"
 
@@ -156,10 +160,25 @@ def _probe_ro_bind_data() -> str:
 
 
 def _probe_go_module_cache() -> str:
-    module_cache = Path(RUNNER_ENV["GOMODCACHE"])
-    if module_cache.is_dir():
-        return ""
-    return f"required read-only Go module cache is absent: {module_cache}"
+    try:
+        fd = sandbox.open_runner_module_cache_fd()
+    except OSError as exc:
+        return f"required no-follow Go module cache is unavailable: {exc}"
+    try:
+        return _probe_result([
+            sandbox.BWRAP,
+            "--unshare-user",
+            "--die-with-parent",
+            "--ro-bind", "/", "/",
+            "--tmpfs", sandbox.USER_HOME,
+            "--dir", f"{sandbox.USER_HOME}/go",
+            "--dir", f"{sandbox.USER_HOME}/go/pkg",
+            "--ro-bind-fd", str(fd), sandbox.GO_MODULE_CACHE_ROOT,
+            "--",
+            "/usr/bin/test", "-d", sandbox.GO_MODULE_CACHE_ROOT,
+        ], pass_fds=(fd,))
+    finally:
+        os.close(fd)
 
 
 @cache
@@ -322,6 +341,10 @@ class RunnerService:
                 raise RunnerShuttingDownError("runner service is shutting down")
             if not request.private_root:
                 raise RunnerUnavailableError("runner private instance root is required")
+            if len(request.snapshot) > sandbox.RUNNER_FILE_BYTES:
+                raise SnapshotTooLargeError(
+                    f"runner snapshot exceeds {sandbox.RUNNER_FILE_BYTES} bytes"
+                )
             spec = self._registry.get(request.runner_id)
             if spec is None:
                 raise UnknownRunnerError(request.runner_id)

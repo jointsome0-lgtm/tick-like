@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT))
 from app.sandbox import (  # noqa: E402
     RUNNER_WORKDIR,
     build_sandbox_argv,
+    open_runner_module_cache_fd,
     require_sandbox_runtime,
 )
 
@@ -101,17 +102,28 @@ def run_profile(
         "/usr/bin/python3", "-c", _INSIDE_PROBE,
         profile, str(bundle), str(ROOT),
     ]
-    result = subprocess.run(
-        build_sandbox_argv(
-            profile, bundle, bundle_root=bundle_root,
-            private_root=bundle_root.parent if profile == "lesson-runner" else None,
-        ) + ["--", *command],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        env=clean_env(proxy=profile == "lesson-agent"),
-        check=False,
+    module_cache_fd = (
+        open_runner_module_cache_fd() if profile == "lesson-runner" else None
     )
+    try:
+        result = subprocess.run(
+            build_sandbox_argv(
+                profile, bundle, bundle_root=bundle_root,
+                private_root=(
+                    bundle_root.parent if profile == "lesson-runner" else None
+                ),
+                module_cache_fd=module_cache_fd,
+            ) + ["--", *command],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            env=clean_env(proxy=profile == "lesson-agent"),
+            check=False,
+            pass_fds=((module_cache_fd,) if module_cache_fd is not None else ()),
+        )
+    finally:
+        if module_cache_fd is not None:
+            os.close(module_cache_fd)
     if result.returncode != 0:
         raise SystemExit(f"{profile}: probe failed: {result.stderr.strip()}")
     payload = json.loads(result.stdout)
