@@ -1195,7 +1195,9 @@ with TestClient(app) as c:
               and "ABI_VERSION = 1" in _d2_text
               and 'msg["ephemeris"] !== "lesson-bridge"' in _d2_text
               and 'want.includes("attempts")' in _d2_text
-              and "MAX_PORT_CHARS = 64 * 1024" in _d2_text)
+              and "MAX_PORT_BYTES = 512 * 1024" in _d2_text
+              and "serializedByteLength" in _d2_text
+              and "new TextEncoder()" in _d2_text)
     check(".gitattributes marks both emitted runtimes as generated",
           "app/static/learn-bridge.js linguist-generated=true"
           in (ROOT / ".gitattributes").read_text(encoding="utf-8")
@@ -1226,6 +1228,34 @@ with TestClient(app) as c:
               and (_d2_out / "terminal.js").read_bytes()
               == terminal_js.encode("utf-8"),
               extra=_d2_cp.stdout + _d2_cp.stderr)
+        _d2_mjs = _d2_out / "learn-bridge.mjs"
+        _d2_mjs.write_text(_d2_js, encoding="utf-8")
+        _d2_sha_cp = subprocess.run(
+            [
+                "node", "--input-type=module", "-e",
+                """
+globalThis.document = {getElementById: () => null};
+const {sha256Hex} = await import(process.argv[1]);
+const encode = new TextEncoder();
+process.stdout.write(JSON.stringify([
+  sha256Hex(encode.encode("")),
+  sha256Hex(encode.encode("abc")),
+  sha256Hex(encode.encode("🪐 orbit")),
+  sha256Hex(encode.encode("x".repeat(70000))),
+]));
+""",
+                _d2_mjs.as_uri(),
+            ],
+            cwd=ROOT, capture_output=True, text=True, timeout=30,
+        )
+        _d2_sha_expected = [
+            hashlib.sha256(value).hexdigest()
+            for value in (b"", b"abc", "🪐 orbit".encode("utf-8"), b"x" * 70000)
+        ]
+        check("emitted dependency-free SHA-256 matches standard vectors",
+              _d2_sha_cp.returncode == 0
+              and json.loads(_d2_sha_cp.stdout) == _d2_sha_expected,
+              extra=_d2_sha_cp.stdout + _d2_sha_cp.stderr)
     else:
         if os.environ.get("CI"):
             check("CI has the repo-local TypeScript compiler for emit freshness",
@@ -2361,17 +2391,244 @@ with TestClient(app) as c:
               and '"capability-not-granted"' in _d5_text
               and "MAX_ATTEMPTS_INFLIGHT" in _d5_text
               and "ATTEMPT_SETTLE_MS" in _d5_text
+              and "MAX_ANSWER_BYTES = 32 * 1024" in _d5_text
+              and "contentByteLength(answer) > MAX_ANSWER_BYTES" in _d5_text
               and "attempt #" in _d5_text)
     check("parent runtime re-validates per operation against fresh metadata",
           "metaQuestions" in _d2_ts
           and "await fetchMeta()" in _d2_ts.split("postAttempt")[1])
+
+    # ---- phase F2 frontend: editor capability and artifact membrane ----
+    # Source and emitted runtime must carry the same block-specific, fresh-meta
+    # guards. This is deliberately the editor-only first commit; run anchors
+    # arrive in the next commit so the review history preserves D-FE-1.
+    for _fe_name, _fe_text in (("learn-bridge.ts", _d2_ts), ("learn-bridge.js", _d2_js)):
+        check(f"{_fe_name}: editor membrane anchors",
+              'frame.dataset["artifactsUrl"]' in _fe_text
+              and 'want.includes("editor")' in _fe_text
+              and 'capabilities.push("editor")' in _fe_text
+              and 'msg["op"] === "artifact.get"' in _fe_text
+              and 'msg["op"] === "artifact.save"' in _fe_text
+              and "freshBlock" in _fe_text
+              and "metaBlocks" in _fe_text
+              and "MAX_BRIDGE_BLOCKS = 100" in _fe_text
+              and "EDITOR_SETTLE_MS" in _fe_text
+              and "MAX_EDITOR_INFLIGHT" in _fe_text
+              and "contentByteLength(content) > MAX_CONTENT_BYTES" in _fe_text
+              and 'body: JSON.stringify({ content, base_rev: baseRev })' in _fe_text)
+    _fe_template = (ROOT / "app" / "templates" / "learn.html").read_text(encoding="utf-8")
+    check("Learn template feature-detects the artifact endpoint",
+          "selected.artifacts_url is defined" in _fe_template
+          and 'data-artifacts-url="{{ selected.artifacts_url }}"' in _fe_template)
+    check("editor operations revalidate the fresh page block before HTTP",
+          "const freshBlock = async" in _d2_ts
+          and "const meta = await fetchMeta()" in _d2_ts.split("const freshBlock = async", 1)[1]
+          and "blocks.find((candidate) => candidate.id === blockId)" in _d2_ts
+          and _d2_ts[_d2_ts.index("const saveArtifact"):
+                     _d2_ts.index("const runStartEndpoint")].count("await freshBlock") == 2
+          and _d2_ts.rindex("await freshBlock", _d2_ts.index("const saveArtifact"),
+                            _d2_ts.index("const runStartEndpoint"))
+          < _d2_ts.index("method: \"POST\"", _d2_ts.index("const saveArtifact")))
+    _fe_get = _d2_ts[_d2_ts.index("const getArtifact"):
+                     _d2_ts.index("const saveArtifact")]
+    check("artifact reads revalidate the page block after GET before disclosure",
+          _fe_get.count("await freshBlock") == 3
+          and _fe_get.index("const rec = await readEndpointJson")
+          < _fe_get.rindex("await freshBlock")
+          < _fe_get.index("boundPort.postMessage(reply)"))
+    check("private artifact reads require sticky parent consent before GET",
+          "let artifactReadConsent: boolean | null = null" in _d2_ts
+          and "artifactReadConsent = null" in _d2_ts
+          and "window.confirm(" in _d2_ts
+          and 'answerError(boundPort, "artifact-read-denied", requestId)' in _fe_get
+          and _fe_get.index("allowArtifactRead()")
+          < _fe_get.index("const rec = await readEndpointJson")
+          and _fe_get.index("allowArtifactRead()")
+          < _fe_get.index("await freshBlock", _fe_get.index("allowArtifactRead()")))
+    check("editor grant refreshes current block metadata at handshake time",
+          "const handleReady = async" in _d2_ts
+          and "const meta = await fetchMeta()" in _d2_ts.split("const handleReady = async", 1)[1]
+          and "armedBlocks = metaBlocks(meta) ?? []" in
+          _d2_ts.split("const handleReady = async", 1)[1]
+          and "grantToken !== token" in _d2_ts)
+
+    # Byte accounting probes the two expansion classes behind the derived
+    # 512 KiB membrane cap: ASCII controls that become six-byte JSON escapes,
+    # and multibyte Unicode at the raw 64 KiB semantic limit.
+    _fe_hostile = "\x00" * (64 * 1024)
+    _fe_multibyte = "🪐" * ((64 * 1024) // len("🪐".encode("utf-8")))
+    _fe_hostile_wire = json.dumps(
+        {"op": "artifact.save", "content": _fe_hostile},
+        ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    _fe_multibyte_wire = json.dumps(
+        {"op": "artifact.save", "content": _fe_multibyte},
+        ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    check("editor byte bounds admit hostile escaping inside the derived cap",
+          len(_fe_hostile.encode("utf-8")) == 64 * 1024
+          and 384 * 1024 <= len(_fe_hostile_wire) < 512 * 1024)
+    check("editor byte bounds measure multibyte raw and serialized UTF-8",
+          len(_fe_multibyte.encode("utf-8")) == 64 * 1024
+          and len(_fe_multibyte_wire) < 512 * 1024
+          and "UTF8.encode(text).byteLength" in _d2_ts)
+
+    _fe_fixture = (ROOT / "fixtures" / "lesson-bridge"
+                   / "editor-run-conventions.html").read_text(encoding="utf-8")
+    check("editor conventions fixture exercises get/save as text-only data",
+          'want: ["editor", "run"]' in _fe_fixture
+          and 'op: "artifact.get"' in _fe_fixture
+          and 'op: "artifact.save"' in _fe_fixture
+          and "status.textContent = text" in _fe_fixture
+          and "innerHTML" not in _fe_fixture)
+    check("editor conventions authenticate and consume one handshake result",
+          "answered || event.source !== window.parent" in _fe_fixture
+          and "event.origin !== appOrigin" in _fe_fixture
+          and 'message.abi !== 1' in _fe_fixture
+          and "event.ports.length !== 1" in _fe_fixture
+          and "event.ports.length !== 0" in _fe_fixture
+          and "answered = true" in _fe_fixture)
+    check("editor conventions mint lesson-wide ids and fail closed without entropy",
+          "crypto.getRandomValues(words)" in _fe_fixture
+          and "requestNonce" in _fe_fixture
+          and "secure request ids unavailable" in _fe_fixture
+          and "fixture-${kind}-${requestNonce}-${++sequence}" in _fe_fixture
+          and "retry keeps runRequestId" in _fe_fixture)
+    check("editor degradation: no bridge stays useful and read-only",
+          "Read-only preview. Connecting" in _fe_fixture
+          and "bridge unavailable" in _fe_fixture
+          and '<textarea id="source"' in _fe_fixture
+          and " readonly>" in _fe_fixture)
+    check("editor degradation: welcome without grant stays read-only",
+          'message.capabilities.includes("editor")' in _fe_fixture
+          and 'readOnly("editor capability not granted")' in _fe_fixture)
+    check("editor degradation: old backend attrs grant no capability",
+          "selected.artifacts_url is defined" in _fe_template
+          and 'const artifactsUrl = frame.dataset["artifactsUrl"] || null' in _d2_ts
+          and 'artifactsUrl !== null && armedBlocks.length > 0' in _d2_ts)
+    check("editor degradation: direct-open fixture stays read-only",
+          "window.parent === window" in _fe_fixture
+          and 'readOnly("direct open: no parent bridge")' in _fe_fixture)
+
+    # ---- phase F5 frontend: composite save/run, owned SSE relay, cancel ----
+    for _fr_name, _fr_text in (("learn-bridge.ts", _d2_ts), ("learn-bridge.js", _d2_js)):
+        check(f"{_fr_name}: run membrane anchors",
+              'frame.dataset["runsUrl"]' in _fr_text
+              and 'want.includes("run")' in _fr_text
+              and 'capabilities.push("run")' in _fr_text
+              and 'msg["op"] === "artifact.save_run"' in _fr_text
+              and 'msg["op"] === "run.cancel"' in _fr_text
+              and 'op: "run.output"' in _fr_text
+              and 'op: "run.exit"' in _fr_text
+              and "MAX_OUTPUT_BYTES = 32 * 1024" in _fr_text
+              and "MAX_OWNED_RUNS = 16" in _fr_text
+              and "ownedRuns" in _fr_text
+              and "activeRelay" in _fr_text
+              and "RUN_SETTLE_MS" in _fr_text)
+    check("Learn template feature-detects the run endpoint independently",
+          "selected.runs_url is defined" in _fe_template
+          and 'data-runs-url="{{ selected.runs_url }}"' in _fe_template)
+    _fr_save_run = _d2_ts[_d2_ts.index("const saveAndRun"):
+                          _d2_ts.index("const cancelRun")]
+    check("save_run saves successfully before starting the returned revision",
+          _fr_save_run.index("artifactEndpoint(blockId)")
+          < _fr_save_run.index("runStartEndpoint(blockId)")
+          and 'saveResult !== "saved" && saveResult !== "unchanged"' in _fr_save_run
+          and "file_rev: fileRev, idempotency_key: idempotencyKey" in _fr_save_run
+          and _fr_save_run.count("await freshBlock") == 4)
+    check("save_run revalidates page/block Run authority after start before relay",
+          _fr_save_run.index("const started = await readEndpointJson")
+          < _fr_save_run.index("const afterStart = await freshBlock")
+          < _fr_save_run.index("rememberOwnedRun")
+          and 'if (!afterStart.run)' in _fr_save_run)
+    check("save_run derives parameter-bound idempotency before artifact mutation",
+          "export const sha256Hex" in _d2_ts
+          and "window.crypto" not in _d2_ts
+          and '"ephemeris:lesson-run:v1", requestId, blockId, content' in _d2_ts
+          and _fr_save_run.index("deriveRunIdempotencyKey")
+          < _fr_save_run.index("artifactEndpoint(blockId)"))
+    check("run ownership gates relay and cancel while navigation only aborts relay",
+          "rememberOwnedRun(runId, { generation: gen, block_id: blockId })" in _d2_ts
+          and "const owner = ownedRuns.get(runId)" in _d2_ts
+          and "owner?.generation === gen && owner.block_id === blockId" in _d2_ts
+          and "if (activeRelay) activeRelay.controller.abort()" in _d2_ts
+          and "ownedRuns = new Map()" in _d2_ts
+          and "service.cancel" not in _d2_ts)
+    _fr_cancel = _d2_ts[_d2_ts.index("const cancelRun"):
+                        _d2_ts.index("const postAttempt")]
+    check("owned run cancel survives block removal but keeps fresh page checks",
+          _fr_cancel.count("await freshBlocks") == 2
+          and "await freshBlock(" not in _fr_cancel
+          and _fr_cancel.index("const owner = ownedRuns.get(runId)")
+          < _fr_cancel.index("await freshBlocks"))
+    _fr_port = _d2_ts[_d2_ts.index("const onPortMessage"):
+                      _d2_ts.index("const finishReady")]
+    check("save_run rejects backend-invalid idempotency keys before mutation",
+          'answerError(port, "invalid-idempotency-key", requestId)' in _fr_port
+          and "requestId.charCodeAt" in _fr_port
+          and _fr_port.index("invalid-idempotency-key")
+          < _fr_port.index("void saveAndRun"))
+    check("one document-wide stream refuses a second save_run before HTTP",
+          "activeRelay !== null || runStartToken !== null" in _fr_port
+          and _fr_port.index("activeRelay !== null || runStartToken !== null")
+          < _fr_port.index("void saveAndRun")
+          and 'answerError(port, "busy", requestId)' in _fr_port)
+    check("SSE relay validates sequence, stream, UTF-8 size, and terminal cause",
+          'new TextDecoder("utf-8", { fatal: true })' in _d2_ts
+          and 'payload["seq"] !== seq' in _d2_ts
+          and 'stream !== "stdout" && stream !== "stderr"' in _d2_ts
+          and "contentByteLength(text) > MAX_OUTPUT_BYTES" in _d2_ts
+          and "RUN_CAUSES.has(cause)" in _d2_ts
+          and 'op: "run.error"' in _d2_ts)
+    _fr_relay_loop = _d2_ts[_d2_ts.index("while (ownsRelay())"):
+                            _d2_ts.index("const saveAndRun")]
+    check("SSE relay drains complete coalesced frames before partial-frame cap",
+          _fr_relay_loop.index('let boundary = buffer.indexOf("\\n\\n")')
+          < _fr_relay_loop.index("UTF8.encode(buffer).byteLength > MAX_PORT_BYTES"))
+    _fr_output_multibyte = "🪐" * ((32 * 1024) // len("🪐".encode("utf-8")))
+    _fr_output_wire = json.dumps(
+        {"op": "run.output", "text": _fr_output_multibyte},
+        ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    check("run output keeps its 32 KiB raw limit inside the serialized cap",
+          len(_fr_output_multibyte.encode("utf-8")) == 32 * 1024
+          and len(_fr_output_wire) < 512 * 1024)
+    check("run conventions fixture exercises save_run, cursor relay, and cancel as text",
+          'op: "artifact.save_run"' in _fe_fixture
+          and 'op: "run.cancel"' in _fe_fixture
+          and 'reply.op === "run.output"' in _fe_fixture
+          and 'reply.op === "run.exit"' in _fe_fixture
+          and "after: cursor" in _fe_fixture
+          and "output.textContent += reply.text" in _fe_fixture
+          and "innerHTML" not in _fe_fixture)
+    check("conventions fixture is test-only, not shipped by the Learn template",
+          "editor-run-conventions" not in _fe_template)
     # frozen docs: the ABI carries the attempt op; the lesson brief teaches
     # the child side of it (child sends ONLY v/op/request_id/question_id/answer)
     _d5_abi = (ROOT / "docs" / "lesson-bridge-abi.md").read_text(encoding="utf-8")
     check("ABI §3.1 freezes the attempt operation",
           "### 3.1" in _d5_abi
           and '"op": "attempt", "v": 1' in _d5_abi
-          and "capability-not-granted" in _d5_abi)
+          and "capability-not-granted" in _d5_abi
+          and "32 KiB of raw UTF-8" in _d5_abi)
+    check("ABI §3.2 freezes editor ops and derived byte accounting",
+          "### 3.2" in _d5_abi
+          and '"op": "artifact.get", "v": 1' in _d5_abi
+          and '"op": "artifact.save", "v": 1' in _d5_abi
+          and "512 KiB" in _d5_abi
+          and "6 bytes per input byte" in _d5_abi
+          and "64 KiB raw UTF-8 bytes" in _d5_abi)
+    check("ABI pins authenticated child handshake and fresh logical request ids",
+          "event.origin" in _d5_abi
+          and "exactly one `MessagePort`" in _d5_abi
+          and "first valid result is final" in _d5_abi
+          and "fresh opaque `request_id`" in _d5_abi
+          and "even across reloads and tabs" in _d5_abi)
+    check("ABI §3.3 freezes composite run, relay ownership, and reconnect",
+          "### 3.3" in _d5_abi
+          and '"op": "artifact.save_run", "v": 1' in _d5_abi
+          and '"op": "run.cancel", "v": 1' in _d5_abi
+          and '"op": "run.output"' in _d5_abi
+          and '"op": "run.exit"' in _d5_abi
+          and "There is no bare child-facing run-start operation" in _d5_abi
+          and "**not** call cancel" in _d5_abi)
     check("lesson brief teaches the frozen attempt call",
           '{"op": "attempt", "v": 1' in lessons_svc._AGENTS_TEMPLATE
           and "retry an unanswered submission with the SAME id"

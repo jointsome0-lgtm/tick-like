@@ -23,6 +23,44 @@ _None._
 
 ## Done
 
+- [x] 2026-07-22 — commits after `fd9f54a` on
+  `fix/36-f4-editor-run-frontend` — `app/static/src/learn-bridge.ts`,
+  emitted `app/static/learn-bridge.js`, `docs/lesson-bridge-abi.md`,
+  `fixtures/lesson-bridge/`, `verify.py`, `docs/reviews/QUEUE.md` — issue #36
+  phase F frontend slice adds the editor bridge membrane first and the run
+  membrane in a later commit, plus their text-only child conventions fixture,
+  additive ABI documentation, and regression coverage. The editor boundary's
+  first Codex findings round aligns the client block bound with the
+  manifest, repeats fresh block validation after the save-settle window, and
+  refreshes block metadata before granting the editor; its second round
+  preserves the attempt operation's 32 KiB semantic bound inside the wider
+  editor membrane. The run boundary's first Codex findings round repeats
+  fresh block validation after artifact reads, rejects backend-invalid
+  idempotency keys before composite saves, and keeps owned-job cancellation
+  available after block removal while retaining fresh page-identity checks.
+  Its second Codex findings round drains complete SSE frames before bounding
+  the retained partial frame and derives the backend idempotency key from the
+  whole save/run operation before the save; generated-brief activation remains
+  the separate following F5 slice. It does not change backend routes, attempt
+  persistence, CSP, sandbox tokens, or terminal statics. Its third Codex
+  findings round computes that key without secure-context-only Web Crypto so
+  supported plain-HTTP trusted-LAN clients retain Run. Its fourth Codex
+  findings round makes private artifact reads fail closed until a sticky
+  per-document parent confirmation explicitly accepts the lesson page's
+  same-frame navigation egress, and repeats fresh block/Run validation after
+  start before exposing the returned job or output. `9e3956b` (drain cycle 1)
+  authenticates and consumes exactly one child handshake result and gives each
+  loaded conventions example a random request-id namespace across reloads and
+  tabs; verify 754, verify_restore 28. Drained 2026-07-23 →
+  `2026-07-23-lesson-editor-run-frontend-review.md`: two Low findings, both
+  resolved in one cycle; no Critical, High, Medium, Low, Info, or open finding
+  remains. Bridge-conventions, served-byte, artifact, runner, run-API,
+  generated-pedagogy, lesson-role, and terminal protections retain the
+  report's stated dispositions. Final verdict: SAFE TO MAKE LIVE for the
+  documented direct-loopback single-worker deployment; wider, proxy-adjacent,
+  or multi-user deployment NO. Live restart is owner-only and was not
+  performed.
+
 - [x] 2026-07-22 — commits after `f2487ee` on `fix/36-f3-run-api`; LANDED via
   merge commit `b40a099`, whose tree is byte-identical to reviewed branch head
   `c660ba4` — `app/main.py`, `app/runner.py`, `app/security.py`,

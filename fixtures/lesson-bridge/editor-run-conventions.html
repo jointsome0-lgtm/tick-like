@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<!-- Vera Example — invented lesson-bridge editor/run conventions fixture. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Vera Example editor and run conventions</title>
+</head>
+<body>
+<h1>Vera Example editor and run loop</h1>
+<p id="status" role="status">Read-only preview. Connecting…</p>
+<label for="source">Program</label>
+<textarea id="source" rows="10" cols="60" readonly>print("Invented orbit")
+</textarea>
+<p>
+  <button id="load" type="button" disabled>Load</button>
+  <button id="save" type="button" disabled>Save</button>
+  <button id="run" type="button" disabled>Run</button>
+  <button id="cancel" type="button" disabled>Cancel</button>
+</p>
+<h2>Output</h2>
+<pre id="output">No output yet.</pre>
+<script>
+(() => {
+  "use strict";
+  const BLOCK_ID = "blk_demo1";
+  const status = document.getElementById("status");
+  const source = document.getElementById("source");
+  const load = document.getElementById("load");
+  const save = document.getElementById("save");
+  const run = document.getElementById("run");
+  const cancel = document.getElementById("cancel");
+  const output = document.getElementById("output");
+  let port = null;
+  let baseRev = "absent";
+  let sequence = 0;
+  let answered = false;
+  let runGranted = false;
+  let runRequestId = null;
+  let cancelRequestId = null;
+  let activeRun = null;
+  let cursor = 0;
+
+  // All user-visible bridge data is text. Never feed it to an HTML parser.
+  const say = (text) => { status.textContent = text; };
+  const readOnly = (reason) => {
+    source.readOnly = true;
+    load.disabled = true;
+    save.disabled = true;
+    run.disabled = true;
+    cancel.disabled = true;
+    say(`Read-only preview (${reason}).`);
+  };
+  const send = (message) => { if (port) port.postMessage(message); };
+
+  if (window.parent === window) {
+    readOnly("direct open: no parent bridge");
+    return;
+  }
+
+  const appOrigin = new URL(location.href).origin;
+  if (appOrigin === "null") {
+    readOnly("opaque URL: no app origin");
+    return;
+  }
+  let requestNonce;
+  try {
+    const words = new Uint32Array(4);
+    crypto.getRandomValues(words);
+    requestNonce = Array.from(
+      words, (word) => word.toString(16).padStart(8, "0"),
+    ).join("");
+  } catch {
+    readOnly("secure request ids unavailable");
+    return;
+  }
+  // New actions are unique across reloads/tabs; retry keeps runRequestId.
+  const requestId = (kind) => `fixture-${kind}-${requestNonce}-${++sequence}`;
+  const announce = () => window.parent.postMessage({
+    ephemeris: "lesson-bridge",
+    type: "ready",
+    abi: [1],
+    want: ["editor", "run"],
+  }, appOrigin);
+  const retry = setInterval(() => { if (!answered) announce(); }, 250);
+  const silence = setTimeout(() => {
+    clearInterval(retry);
+    if (!answered) readOnly("bridge unavailable");
+  }, 2000);
+
+  window.addEventListener("message", (event) => {
+    if (answered || event.source !== window.parent || event.origin !== appOrigin) return;
+    const message = event.data;
+    if (!message || message.ephemeris !== "lesson-bridge") return;
+    if (message.type === "reject") {
+      if (event.ports.length !== 0 || message.reason !== "abi-unsupported"
+          || !Array.isArray(message.supported)
+          || !message.supported.every(Number.isInteger)) return;
+      answered = true;
+      clearInterval(retry);
+      clearTimeout(silence);
+      readOnly("unsupported bridge");
+      return;
+    }
+    if (message.type !== "welcome" || message.abi !== 1
+        || event.ports.length !== 1
+        || !Array.isArray(message.capabilities)
+        || !message.capabilities.every((value) => typeof value === "string")) {
+      return;
+    }
+    answered = true;
+    clearInterval(retry);
+    clearTimeout(silence);
+    const granted = Array.isArray(message.capabilities)
+      && message.capabilities.includes("editor");
+    if (!granted) {
+      readOnly("editor capability not granted");
+      return;
+    }
+    runGranted = message.capabilities.includes("run");
+    port = event.ports[0];
+    port.onmessage = (portEvent) => {
+      const reply = portEvent.data;
+      if (!reply || typeof reply !== "object") return;
+      if (reply.op === "artifact.get") {
+        source.value = typeof reply.content === "string" ? reply.content : "";
+        baseRev = reply.exists && typeof reply.file_rev === "string"
+          ? reply.file_rev : "absent";
+        if (activeRun === null) {
+          runRequestId = null;
+          cursor = 0;
+          output.textContent = "";
+          run.textContent = "Run";
+        }
+        say(reply.exists ? "Loaded saved program." : "Loaded a new empty program.");
+      } else if (reply.op === "artifact.save") {
+        if (typeof reply.file_rev === "string") baseRev = reply.file_rev;
+        say(reply.result === "unchanged" ? "Already saved." : "Saved.");
+      } else if (reply.op === "artifact.save_run") {
+        if (typeof reply.file_rev === "string") baseRev = reply.file_rev;
+        activeRun = reply.run_id;
+        run.disabled = true;
+        run.textContent = "Run";
+        cancel.disabled = false;
+        say("Saved and running.");
+      } else if (reply.op === "run.output") {
+        if (reply.run_id !== activeRun || !Number.isSafeInteger(reply.seq)
+            || reply.seq <= cursor || typeof reply.text !== "string") return;
+        cursor = reply.seq;
+        if (output.textContent === "No output yet.") output.textContent = "";
+        output.textContent += reply.text;
+      } else if (reply.op === "run.exit") {
+        if (reply.run_id !== activeRun || !Number.isSafeInteger(reply.seq)
+            || reply.seq <= cursor) return;
+        cursor = reply.seq;
+        activeRun = null;
+        runRequestId = null;
+        run.disabled = !runGranted;
+        run.textContent = "Run";
+        cancel.disabled = true;
+        say(`Run finished: ${String(reply.cause || "unknown")}.`);
+      } else if (reply.op === "run.cancel") {
+        cancelRequestId = null;
+        say("Cancellation requested.");
+      } else if (reply.op === "run.error") {
+        if (reply.run_id !== activeRun) return;
+        run.disabled = !runGranted;
+        run.textContent = "Retry output";
+        say(`Output relay unavailable (${String(reply.code || "unknown")}).`);
+      } else if (reply.op === "error") {
+        if (reply.code === "file-conflict") {
+          say("The saved file changed. Load it again before saving.");
+        } else {
+          say(`Operation unavailable (${String(reply.code || "unknown")}).`);
+        }
+        if (reply.request_id === runRequestId) {
+          run.disabled = !runGranted;
+          cancel.disabled = activeRun === null;
+        } else if (reply.request_id === cancelRequestId) {
+          cancelRequestId = null;
+          cancel.disabled = activeRun === null;
+        }
+      }
+    };
+    source.readOnly = false;
+    load.disabled = false;
+    save.disabled = false;
+    run.disabled = !runGranted;
+    say(runGranted ? "Editor and Run ready." : "Editor ready; Run unavailable.");
+  });
+
+  load.addEventListener("click", () => send({
+    op: "artifact.get",
+    v: 1,
+    request_id: requestId("load"),
+    block_id: BLOCK_ID,
+  }));
+  save.addEventListener("click", () => send({
+    op: "artifact.save",
+    v: 1,
+    request_id: requestId("save"),
+    block_id: BLOCK_ID,
+    content: source.value,
+    base_rev: baseRev,
+  }));
+  run.addEventListener("click", () => {
+    if (runRequestId === null) {
+      runRequestId = requestId("run");
+      cursor = 0;
+      output.textContent = "";
+    }
+    run.disabled = true;
+    send({
+      op: "artifact.save_run",
+      v: 1,
+      request_id: runRequestId,
+      block_id: BLOCK_ID,
+      content: source.value,
+      base_rev: baseRev,
+      after: cursor,
+    });
+  });
+  cancel.addEventListener("click", () => {
+    if (!activeRun) return;
+    cancel.disabled = true;
+    cancelRequestId = requestId("cancel");
+    send({
+      op: "run.cancel",
+      v: 1,
+      request_id: cancelRequestId,
+      run_id: activeRun,
+    });
+  });
+  source.addEventListener("input", () => {
+    if (activeRun !== null) return;
+    runRequestId = null;
+    cursor = 0;
+    output.textContent = "";
+    run.textContent = "Run";
+  });
+  announce();
+})();
+</script>
+</body>
+</html>
