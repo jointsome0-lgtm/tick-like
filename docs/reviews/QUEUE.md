@@ -20,7 +20,9 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 ## Pending
 
 - [ ] 2026-07-23 — commits after `13cab1b` on
-  `fix/58-attempts-projection-cost` — `app/services/attempts.py`, `app/db.py`,
+  `fix/58-attempts-projection-cost`; LANDED via merge commit `f004546`, whose
+  tree is byte-identical to reviewed branch head `4256a2c` —
+  `app/services/attempts.py`, `app/db.py`,
   `verify.py`, `docs/lesson-attempts-api.md`, `docs/reviews/QUEUE.md` — issue
   #58 replaces the attempt projection's database-wide writer-lock section and
   full-prefix append verification with private lesson-UID file locking, a
