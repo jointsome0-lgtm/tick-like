@@ -1533,6 +1533,72 @@ process.stdout.write(JSON.stringify([
     check("oversized body is 413 before any parsing",
           c.post(_at_url, content=b"{" + b" " * (300 * 1024),
                  headers={"content-type": "application/json"}).status_code == 413)
+
+    # Exercise the ASGI app directly so parser-specific Content-Length /
+    # Transfer-Encoding behavior cannot hide a dishonest declared length. The
+    # fifth 64-KiB chunk crosses the 256-KiB cap; the remaining three chunks
+    # must never be requested. Both public aliases share this admission path.
+    import asyncio as _at_asyncio
+
+    async def _at_direct_asgi(path, declared_length, chunks):
+        sent = []
+        consumed = 0
+
+        async def receive():
+            nonlocal consumed
+            if consumed >= len(chunks):
+                return {"type": "http.disconnect"}
+            body = chunks[consumed]
+            consumed += 1
+            return {
+                "type": "http.request",
+                "body": body,
+                "more_body": consumed < len(chunks),
+            }
+
+        async def send(message):
+            sent.append(message)
+
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode("ascii"),
+            "query_string": b"",
+            "root_path": "",
+            "headers": [
+                (b"host", b"testserver"),
+                (b"content-type", b"application/json"),
+                (b"content-length", str(declared_length).encode("ascii")),
+            ],
+            "client": ("127.0.0.1", 50000),
+            "server": ("testserver", 80),
+        }
+        await app(scope, receive, send)
+        status = next(
+            message["status"] for message in sent
+            if message["type"] == "http.response.start"
+        )
+        return status, consumed
+
+    _at_chunks = [b"x" * (64 * 1024) for _ in range(8)]
+    _at_stream_id = _at_asyncio.run(
+        _at_direct_asgi(_at_url, 1, _at_chunks))
+    _at_stream_slug = _at_asyncio.run(_at_direct_asgi(
+        f"/learn/lessons/by-slug/{_at['slug']}/attempts", 1, _at_chunks))
+    check("attempt aliases abort dishonest multi-chunk bodies mid-stream",
+          _at_stream_id == (413, 5) and _at_stream_slug == (413, 5))
+
+    _at_negative_id = _at_asyncio.run(
+        _at_direct_asgi(_at_url, -1, [b"{}"]))
+    _at_negative_slug = _at_asyncio.run(_at_direct_asgi(
+        f"/learn/lessons/by-slug/{_at['slug']}/attempts", -1, [b"{}"]))
+    check("attempt aliases reject negative Content-Length before body reads",
+          _at_negative_id == (400, 0) and _at_negative_slug == (400, 0))
+
     # deep nesting under the byte cap raises RecursionError inside json.loads
     # (PR-57 round 4) — still the documented invalid-json 400, never a 500
     _at_deep = c.post(_at_url, content=b"[" * 20000 + b"]" * 20000,

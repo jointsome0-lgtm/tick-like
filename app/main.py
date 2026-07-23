@@ -1728,6 +1728,8 @@ async def _record_attempt_request(
         expected_len = int(length)
     except ValueError:
         return _attempt_refusal("invalid-request", 400, "bad Content-Length")
+    if expected_len < 0:
+        return _attempt_refusal("invalid-request", 400, "bad Content-Length")
     if expected_len > _ATTEMPT_MAX_BODY:
         return _attempt_refusal("payload-too-large", 413, "request body too large")
     content_type = request.headers.get("content-type", "")
@@ -1735,9 +1737,12 @@ async def _record_attempt_request(
         return _attempt_refusal(
             "unsupported-media-type", 415, "submissions are application/json"
         )
-    body = await request.body()
-    if len(body) > _ATTEMPT_MAX_BODY:  # header lied (chunked/mismatch): same cap
+    try:
+        body = await read_capped(request, _ATTEMPT_MAX_BODY)
+    except PayloadTooLarge:
         return _attempt_refusal("payload-too-large", 413, "request body too large")
+    except ValueError:
+        return _attempt_refusal("invalid-request", 400, "bad Content-Length")
     try:
         payload = json.loads(body)
     except (ValueError, RecursionError):
