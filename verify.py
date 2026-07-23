@@ -391,7 +391,11 @@ with TestClient(app) as c:
     check("lesson AGENTS.md teaches the text-only editor/run bridge loop",
           "plain textarea with Load and Save" in agents_text
           and "add Run and Cancel" in agents_text
-          and "editor-only page omits `run`" in agents_text
+          and "editor-only page asks for `editor`" in agents_text
+          and "`attempts` only if it also records" in agents_text
+          and "Gate each affordance independently" in agents_text
+          and "placeholder to replace, never a literal" in agents_text
+          and "missing `run` grant never disables" in agents_text
           and '"want":["attempts","editor","run"]' in agents_text
           and "attempts-only ready example" in agents_text
           and "`artifact.get`" in agents_text
@@ -399,7 +403,13 @@ with TestClient(app) as c:
           and "`artifact.save_run`" in agents_text
           and "`run.cancel`" in agents_text
           and "fresh lesson-wide `request_id`" in agents_text
-          and "`textContent` or text nodes, never as markup" in agents_text
+          and '"op":"artifact.get","v":1' in agents_text
+          and '"op":"artifact.save","v":1' in agents_text
+          and '"op":"artifact.save_run","v":1' in agents_text
+          and '"op":"run.cancel","v":1' in agents_text
+          and 'base_rev: "absent"' in agents_text
+          and "only increasing `seq` values" in agents_text
+          and "textarea `.value`, `textContent`, or text nodes" in agents_text
           and "static snippet cannot" in agents_text
           and "Terminal experiments" in agents_text
           and "remain first-class" in agents_text)

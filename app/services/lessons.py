@@ -1115,19 +1115,35 @@ registered runner, add Run and Cancel while a run is active. For that
 runner-backed page, the one ready announcement is
 `{"ephemeris":"lesson-bridge","type":"ready","abi":[1],"want":["attempts","editor","run"]}`.
 Use that capability list in place of the attempts-only ready example in the
-general bridge recipe below. An editor-only page omits `run` and its controls.
-Keep the textarea read-only and controls disabled unless the requested
-capabilities are actually granted.
+general bridge recipe below. An editor-only page asks for `editor`, adds
+`attempts` only if it also records declared questions, and omits `run` and its
+controls. Gate each affordance independently: only an `editor` grant makes the
+textarea writable and enables Load/Save; only a `run` grant enables Run/Cancel.
+A missing `run` grant never disables a granted editor.
 
 Wire the controls only through `docs/lesson-bridge-abi.md` §3.2/§3.3:
 Load uses `artifact.get`, Save uses `artifact.save`, Run uses the composite
 `artifact.save_run`, and Cancel uses `run.cancel`. Give each new logical
-operation a fresh lesson-wide `request_id`; reuse it only to retry that
-exact operation. Render every status and all `run.output` as text with
-`textContent` or text nodes, never as markup. Use a block only when running
-the code teaches something a static snippet cannot. Terminal experiments
-remain first-class whenever the learner should inspect, combine, or explore
-beyond one bounded editor file.
+operation a fresh lesson-wide `request_id`; reuse it only to retry that exact
+operation. The app repository may not be present in this shell, so use these
+minimum frozen requests rather than guessing their envelopes:
+
+- Load: `{"op":"artifact.get","v":1,"request_id":"…","block_id":"blk_…"}`.
+- Save: `{"op":"artifact.save","v":1,"request_id":"…","block_id":"blk_…","content":"…","base_rev":"absent"}`.
+- Run: `{"op":"artifact.save_run","v":1,"request_id":"…","block_id":"blk_…","content":"…","base_rev":"absent","after":0}`.
+- Cancel: `{"op":"run.cancel","v":1,"request_id":"…","run_id":"…"}`.
+
+Every `…` above is a placeholder to replace, never a literal id or value.
+After Load, use `base_rev: "absent"` only when `exists` is false; otherwise
+retain its `file_rev`. After Save or Save/Run, advance to the returned
+`file_rev`. Match ordinary replies to `request_id`; accept `run.output` and
+`run.exit` only for the `run_id` returned by this page's Save/Run, and apply
+only increasing `seq` values. Keep the last applied sequence as `after` for
+an exact retry. Render every status, artifact content, and run output as text
+with textarea `.value`, `textContent`, or text nodes, never as markup. Use a
+block only when running the code teaches something a static snippet cannot.
+Terminal experiments remain first-class whenever the learner should inspect,
+combine, or explore beyond one bounded editor file.
 
 ## Bridge conventions — wiring Check into pages
 
