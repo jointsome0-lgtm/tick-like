@@ -31,8 +31,11 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
   repair input, and compares the full post-append descriptor/name seal. It
   second round keeps the rendered temp descriptor open across rebuild
   publication and compares its stable render fields plus full published-name
-  seal before advancing the cursor. It does not change attempt authority,
-  HTTP responses, refusal ordering, rate-limit semantics, or the
+  seal before advancing the cursor. The third round validates cursor-id and
+  sort-tail authority anchors, binds append state to the immediate post-write
+  descriptor plus a bounded tail read, detects mtime-restored rebuild
+  rewrites, and never retries a failed close. It does not change attempt
+  authority, HTTP responses, refusal ordering, rate-limit semantics, or the
   `attempts.jsonl` line format.
 
 - [ ] 2026-07-23 — commits after `c125534` on

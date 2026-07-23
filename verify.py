@@ -1884,28 +1884,84 @@ process.stdout.write(JSON.stringify([
               row["attempt_id"] for row in _at_rows()
           ])
 
+    # A rewrite immediately after the append helper returns must also be
+    # detected: _write_all returns its immediate descriptor seal, so fsync's
+    # later seal cannot advance the cursor over concurrently changed bytes.
+    attempts_svc._reset_rate_limit()
+    _at_real_write_all2 = attempts_svc._write_all
+    _at_append_mutation = {"done": False}
+
+    def _at_write_then_mutate(fd, data):
+        written_st = _at_real_write_all2(fd, data)
+        if (
+            bytes(data).startswith(b'{"kind": "attempt"')
+            and not _at_append_mutation["done"]
+        ):
+            _os.pwrite(fd, b"!", 0)
+            _os.fsync(fd)
+            _at_append_mutation["done"] = True
+        return written_st
+
+    with _mock.patch.object(
+            attempts_svc, "_write_all", _at_write_then_mutate):
+        _at_append_race = c.post(_at_url, json=dict(
+            _at_body, idempotency_key="vera-append-race-1",
+            answer="Vera Example: append publication raced."))
+    check("append-time same-inode rewrite cannot advance the cursor",
+          _at_append_mutation["done"]
+          and _at_append_race.json().get("projection") == "projected"
+          and [
+              json.loads(line)["attempt_id"]
+              for line in _at_proj.read_text(encoding="utf-8").splitlines()
+          ] == [row["attempt_id"] for row in _at_rows()])
+
     # close(2) surfacing a delayed write error (PR-57 round 3): target the
     # append descriptor specifically now that the cursor sidecar also opens
     # bounded descriptors. The repair rebuild covers the durable row.
     attempts_svc._reset_rate_limit()
     _at_real_close = _os.close
+    _at_real_open3 = _os.open
     _at_real_projection_fd = attempts_svc._projection_fd
-    _at_close_state = {"raised": False, "append_fds": set()}
+    _at_close_state = {
+        "raised": False,
+        "target_fd": None,
+        "target_reopened": False,
+        "close_before_reopen": 0,
+    }
 
     def _at_tracked_projection_fd(lesson_, flags):
         fd = _at_real_projection_fd(lesson_, flags)
         if flags & _os.O_APPEND:
-            _at_close_state["append_fds"].add(fd)
+            _at_close_state["target_fd"] = fd
+        return fd
+
+    def _at_track_reopen(*args, **kwargs):
+        fd = _at_real_open3(*args, **kwargs)
+        if (
+            _at_close_state["raised"]
+            and fd == _at_close_state["target_fd"]
+        ):
+            _at_close_state["target_reopened"] = True
         return fd
 
     def _at_bad_close(fd):
+        if (
+            fd == _at_close_state["target_fd"]
+            and _at_close_state["raised"]
+            and not _at_close_state["target_reopened"]
+        ):
+            _at_close_state["close_before_reopen"] += 1
         _at_real_close(fd)
-        if fd in _at_close_state["append_fds"] and not _at_close_state["raised"]:
+        if (
+            fd == _at_close_state["target_fd"]
+            and not _at_close_state["raised"]
+        ):
             _at_close_state["raised"] = True
             raise OSError(28, "No space left on device")
 
     with _mock.patch.object(
             attempts_svc, "_projection_fd", _at_tracked_projection_fd), \
+            _mock.patch("os.open", side_effect=_at_track_reopen), \
             _mock.patch("os.close", side_effect=_at_bad_close):
         _at_close = c.post(_at_url, json=dict(
             _at_body, idempotency_key="vera-close-1",
@@ -1915,11 +1971,14 @@ process.stdout.write(JSON.stringify([
     check("close(2) failure never fails the attempt: rebuild covers the append",
           _at_close.json().get("projection") == "projected"
           and _at_close_state["raised"]
+          and _at_close_state["close_before_reopen"] == 0
           and len(_at_lines5) == len(_at_rows())
           and json.loads(_at_lines5[-1])["attempt_id"] == _at_last3["attempt_id"],
           extra=str({
               "response": _at_close.json(),
               "raised": _at_close_state["raised"],
+              "target_reopened": _at_close_state["target_reopened"],
+              "close_before_reopen": _at_close_state["close_before_reopen"],
               "projection_lines": len(_at_lines5),
               "authority_rows": len(_at_rows()),
               "projection_last": json.loads(_at_lines5[-1])["attempt_id"],
@@ -1958,6 +2017,29 @@ process.stdout.write(JSON.stringify([
           and len(_at_proj.read_text(encoding="utf-8").splitlines())
           == len(_at_rows()))
 
+    # A database restore can leave the private cursor numerically ahead of
+    # SQLite. Both the max-id row identity and the projection sort-tail anchor
+    # must still exist in authority before an empty unseen-row query is trusted.
+    _at_ahead_state = json.loads(_at_state_path.read_text(encoding="ascii"))
+    _at_ahead_state["cursor_id"] += 100000
+    _at_ahead_state["cursor_attempt_id"] = str(_uuid4())
+    _at_state_path.write_text(
+        json.dumps(_at_ahead_state), encoding="ascii")
+    attempts_svc._reset_rate_limit()
+    _at_ahead = c.post(_at_url, json=dict(
+        _at_body, idempotency_key="vera-ahead-cursor-1",
+        answer="Vera Example: restored authority wins."))
+    _at_repaired_state = json.loads(
+        _at_state_path.read_text(encoding="ascii"))
+    check("cursor ahead of restored SQLite authority forces rebuild",
+          _at_ahead.json().get("projection") == "projected"
+          and _at_repaired_state["cursor_id"]
+          == max(row["id"] for row in _at_rows())
+          and [
+              json.loads(line)["attempt_id"]
+              for line in _at_proj.read_text(encoding="utf-8").splitlines()
+          ] == [row["attempt_id"] for row in _at_rows()])
+
     # Rebuild keeps the rendered temp descriptor open across replace. A
     # same-inode rewrite immediately after publication changes its post-replace
     # seal relative to the rendered snapshot, returns pending, and is healed by
@@ -1970,12 +2052,17 @@ process.stdout.write(JSON.stringify([
     def _at_replace_then_mutate(src, dst, *args, **kwargs):
         result = _at_real_replace2(src, dst, *args, **kwargs)
         if Path(dst) == _at_proj and not _at_rebuild_mutation["done"]:
+            published = _os.stat(_at_proj)
             with _at_proj.open("r+b") as fh:
                 original = fh.read(1)
                 fh.seek(0)
                 fh.write(b"!" if original != b"!" else b"?")
                 fh.flush()
                 _os.fsync(fh.fileno())
+            _os.utime(
+                _at_proj,
+                ns=(published.st_atime_ns, published.st_mtime_ns),
+            )
             _at_rebuild_mutation["done"] = True
         return result
 
@@ -2227,7 +2314,8 @@ process.stdout.write(JSON.stringify([
               _at_growth_fast
               and _at_growth_cost["read_bytes"]
               <= attempts_svc.PROJECTION_STATE_MAX_BYTES
-              and _at_growth_cost["pread_bytes"] == 0
+              and _at_growth_cost["pread_bytes"]
+              <= attempts_svc.MAX_LINE_BYTES
               and _at_growth_cost["render_calls"] == 1
               and _at_growth_cost["render_bytes"]
               <= attempts_svc.MAX_LINE_BYTES,
@@ -4332,10 +4420,13 @@ process.stdout.write(JSON.stringify([
         check("schema migrated to current version",
               cconn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION)
         check("v13 installs the bounded attempt projection cursor index",
-              "idx_attempts_lesson_cursor" in {
+              {
+                  "idx_attempts_lesson_cursor",
+                  "idx_attempts_lesson_order",
+              }.issubset({
                   row["name"] for row in cconn.execute(
                       "PRAGMA index_list(lesson_attempts)")
-              })
+              }))
         oid = ce.create_event(cconn, "Orbit Drill", start_date="2027-04-07", freq="weekly",
                               byweekday="1010100", start_time="09:10", end_time="09:55")
         sid = ce.create_event(cconn, "Signal Lab", start_date="2027-04-07", freq="weekly",

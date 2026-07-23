@@ -524,12 +524,15 @@ def _migrate_to_12(conn: sqlite3.Connection) -> None:
 
 
 # v13 — bounded lesson-attempt projection cursor lookup (issue #58): the
-# app-private durable sidecar advances by the authority row id. This covering
-# prefix lets one projection append ask for at most the next two rows without
-# scanning attempts belonging to other lessons or historical answer bytes.
+# app-private durable sidecar advances by authority row id and retains the
+# projection sort tail. These indexes let one append validate both anchors and
+# ask for at most the next two rows without scanning unrelated attempts or
+# historical answer bytes.
 _SCHEMA_V13 = """
 CREATE INDEX IF NOT EXISTS idx_attempts_lesson_cursor
   ON lesson_attempts(lesson_id, id);
+CREATE INDEX IF NOT EXISTS idx_attempts_lesson_order
+  ON lesson_attempts(lesson_id, created_at, attempt_id);
 """
 
 

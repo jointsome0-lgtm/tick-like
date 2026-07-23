@@ -112,11 +112,12 @@ port-level result codes (the slot reserved in lesson-bridge-abi.md §3).
    private per-lesson UID lock (O_APPEND + fsync, `O_NOFOLLOW`, singly linked
    regular files only). A small durable cursor/seal under the configured
    private data root lets the fast path select at most the next two authority
-   rows and render at most one new line; projection filesystem work holds no
-   SQLite writer transaction. The UID lock, not SQLite's database-wide writer
-   lock, provides cross-process projection exclusion across cursor check,
-   append/rebuild, and publication. A busy UID lock returns
-   `projection: pending` rather than blocking the request.
+   rows, validate the cursor-id and sort-tail authority anchors, read back at
+   most the one appended line, and render at most one new line; projection
+   filesystem work holds no SQLite writer transaction. The UID lock, not
+   SQLite's database-wide writer lock, provides cross-process projection
+   exclusion across cursor check, append/rebuild, and publication. A busy UID
+   lock returns `projection: pending` rather than blocking the request.
 3. When the file or cursor is missing, torn, behind the table, reordered, or
    replaced by a special/multi-link file, the append falls back to an
    idempotent full rebuild from SQLite (ascending `created_at`, ties by

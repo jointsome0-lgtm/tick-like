@@ -315,13 +315,14 @@ def _projection_file_lock(lesson: dict):
             os.close(fd)
 
 
-def _write_all(fd: int, data: bytes) -> None:
+def _write_all(fd: int, data: bytes) -> os.stat_result:
     view = memoryview(data)
     while view:
         count = os.write(fd, view)
         if count <= 0:
             raise OSError("short write on projection file")
         view = view[count:]
+    return os.fstat(fd)
 
 
 def _file_seal(st: os.stat_result) -> dict:
@@ -389,6 +390,7 @@ def _read_state(lesson: dict) -> dict | None:
     if not isinstance(state, dict):
         return None
     cursor_id = state.get("cursor_id")
+    cursor_attempt = state.get("cursor_attempt_id")
     tail_created = state.get("tail_created_at")
     tail_attempt = state.get("tail_attempt_id")
     seal = state.get("file")
@@ -401,11 +403,17 @@ def _read_state(lesson: dict) -> dict | None:
         or not isinstance(seal, dict)
         or (
             cursor_id == 0
-            and (tail_created is not None or tail_attempt is not None)
+            and (
+                cursor_attempt is not None
+                or tail_created is not None
+                or tail_attempt is not None
+            )
         )
         or (
             cursor_id > 0
             and (
+                not isinstance(cursor_attempt, str)
+                or
                 not isinstance(tail_created, str)
                 or not isinstance(tail_attempt, str)
             )
@@ -431,12 +439,14 @@ def _write_state(lesson: dict, state: dict) -> None:
         try:
             _write_all(fd, data)
             os.fsync(fd)
-            os.close(fd)
+            closing_fd = fd
             fd = -1
+            os.close(closing_fd)
         except BaseException:
             if fd >= 0:
-                os.close(fd)
+                closing_fd = fd
                 fd = -1
+                os.close(closing_fd)
             raise
         os.replace(tmp_name, state_path)
         parent_fd = os.open(
@@ -476,6 +486,40 @@ def _projection_matches_state(lesson: dict, state: dict) -> bool:
         os.close(fd)
 
 
+def _cursor_matches_authority(
+    conn: sqlite3.Connection, lesson: dict, state: dict
+) -> bool:
+    """Verify both durable cursor anchors against the current SQLite truth.
+
+    This makes a sidecar left ahead by a database restore repair input instead
+    of letting an empty ``id > cursor`` query bless stale projected rows.
+    """
+    if state["cursor_id"] == 0:
+        return conn.execute(
+            "SELECT 1 FROM lesson_attempts WHERE lesson_id = ? LIMIT 1",
+            (lesson["id"],),
+        ).fetchone() is None
+    cursor_anchor = conn.execute(
+        "SELECT 1 FROM lesson_attempts "
+        "WHERE lesson_id = ? AND id = ? AND attempt_id = ?",
+        (
+            lesson["id"],
+            state["cursor_id"],
+            state["cursor_attempt_id"],
+        ),
+    ).fetchone()
+    tail_anchor = conn.execute(
+        "SELECT 1 FROM lesson_attempts "
+        "WHERE lesson_id = ? AND created_at = ? AND attempt_id = ?",
+        (
+            lesson["id"],
+            state["tail_created_at"],
+            state["tail_attempt_id"],
+        ),
+    ).fetchone()
+    return cursor_anchor is not None and tail_anchor is not None
+
+
 def _rebuild_projection(conn: sqlite3.Connection, lesson: dict) -> None:
     """Idempotent reconcile (§6.1): rewrite the whole projection from the
     authority in bounded memory: rows are rendered directly from the SQLite
@@ -497,6 +541,7 @@ def _rebuild_projection(conn: sqlite3.Connection, lesson: dict) -> None:
             os.rename(path, f"{path}.collision-{uuid4().hex[:8]}")
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=".attempts-")
     cursor_id = 0
+    cursor_attempt_id = None
     tail_created_at = None
     tail_attempt_id = None
     try:
@@ -510,7 +555,9 @@ def _rebuild_projection(conn: sqlite3.Connection, lesson: dict) -> None:
                 row = dict(sqlite_row)
                 line = _projection_line(row).encode("utf-8")
                 _write_all(fd, line)
-                cursor_id = max(cursor_id, row["id"])
+                if row["id"] > cursor_id:
+                    cursor_id = row["id"]
+                    cursor_attempt_id = row["attempt_id"]
                 tail_created_at = row["created_at"]
                 tail_attempt_id = row["attempt_id"]
         finally:
@@ -530,6 +577,7 @@ def _rebuild_projection(conn: sqlite3.Connection, lesson: dict) -> None:
         )
         try:
             os.fsync(parent_fd)
+            parent_st = os.fstat(parent_fd)
         finally:
             os.close(parent_fd)
         published_st = os.fstat(fd)
@@ -538,20 +586,23 @@ def _rebuild_projection(conn: sqlite3.Connection, lesson: dict) -> None:
              published_st.st_mtime_ns)
             != (rendered_st.st_dev, rendered_st.st_ino, rendered_st.st_size,
                 rendered_st.st_mtime_ns)
+            or published_st.st_ctime_ns != parent_st.st_mtime_ns
         ):
             raise OSError("rebuilt projection changed during publication")
         state = {
             "v": PROJECTION_STATE_VERSION,
             "lesson_uid": lesson["uid"],
             "cursor_id": cursor_id,
+            "cursor_attempt_id": cursor_attempt_id,
             "tail_created_at": tail_created_at,
             "tail_attempt_id": tail_attempt_id,
             "file": _file_seal(published_st),
         }
         if not _seal_matches(os.lstat(path), state["file"]):
             raise OSError("rebuilt projection changed during publication")
-        os.close(fd)
+        closing_fd = fd
         fd = -1
+        os.close(closing_fd)
         _write_state(lesson, state)
     except BaseException:
         if fd >= 0:
@@ -603,7 +654,11 @@ def _project_attempt_locked(
 ) -> bool:
     del row  # the committed authority, not caller memory, supplies file bytes
     state = _read_state(lesson)
-    if state is not None and _projection_matches_state(lesson, state):
+    if (
+        state is not None
+        and _projection_matches_state(lesson, state)
+        and _cursor_matches_authority(conn, lesson, state)
+    ):
         unseen = conn.execute(
             "SELECT * FROM lesson_attempts "
             "WHERE lesson_id = ? AND id > ? ORDER BY id LIMIT 2",
@@ -625,11 +680,26 @@ def _project_attempt_locked(
                 before = os.fstat(fd)
                 if not _seal_matches(before, state["file"]):
                     raise OSError("projection changed before append")
-                _write_all(fd, line)
+                expected_size = before.st_size + len(line)
+                written_st = _write_all(fd, line)
+                if (
+                    not stat_module.S_ISREG(written_st.st_mode)
+                    or written_st.st_nlink != 1
+                    or (written_st.st_dev, written_st.st_ino)
+                    != (before.st_dev, before.st_ino)
+                    or written_st.st_size != expected_size
+                ):
+                    raise OSError("projection changed during append")
                 os.fsync(fd)
                 after = os.fstat(fd)
-                os.close(fd)
+                if (
+                    not _seal_matches(after, _file_seal(written_st))
+                    or os.pread(fd, len(line), before.st_size) != line
+                ):
+                    raise OSError("projection changed after append")
+                closing_fd = fd
                 fd = -1
+                os.close(closing_fd)
                 name_st = os.lstat(_projection_path(lesson))
                 if not _seal_matches(name_st, _file_seal(after)):
                     raise OSError("projection name changed during append")
@@ -637,6 +707,7 @@ def _project_attempt_locked(
                     "v": PROJECTION_STATE_VERSION,
                     "lesson_uid": lesson["uid"],
                     "cursor_id": candidate["id"],
+                    "cursor_attempt_id": candidate["attempt_id"],
                     "tail_created_at": candidate["created_at"],
                     "tail_attempt_id": candidate["attempt_id"],
                     "file": _file_seal(name_st),
