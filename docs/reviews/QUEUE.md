@@ -20,12 +20,13 @@ Entry format: `- [ ] YYYY-MM-DD — <commits> — <paths> — <what changed>`
 ## Pending
 
 - [ ] 2026-07-23 — commits after `c125534` on
-  `fix/59-attempt-body-stream-cap` — `app/main.py`, `verify.py`,
-  `docs/reviews/QUEUE.md` — issue #59 changes both lesson-attempt aliases to
-  enforce the existing 256 KiB request-body limit while consuming the ASGI
-  stream, rejects negative declared lengths, and adds direct-ASGI admission
-  regressions; it does not change in-cap attempt semantics, persistence, the
-  projection format, or any listener configuration.
+  `fix/59-attempt-body-stream-cap`; LANDED via merge commit `06e4674`, whose
+  tree is byte-identical to reviewed branch head `9d9b8ee` — `app/main.py`,
+  `verify.py`, `docs/reviews/QUEUE.md` — issue #59 changes both lesson-attempt
+  aliases to enforce the existing 256 KiB request-body limit while consuming
+  the ASGI stream, rejects negative declared lengths, and adds direct-ASGI
+  admission regressions; it does not change in-cap attempt semantics,
+  persistence, the projection format, or any listener configuration.
 
 ## Done
 
