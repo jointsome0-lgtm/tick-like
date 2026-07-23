@@ -1136,14 +1136,16 @@ minimum frozen requests rather than guessing their envelopes:
 Every `…` above is a placeholder to replace, never a literal id or value.
 After Load, use `base_rev: "absent"` only when `exists` is false; otherwise
 retain its `file_rev`. After Save or Save/Run, advance to the returned
-`file_rev`. Match ordinary replies to `request_id`; accept `run.output` and
-`run.exit` only for the `run_id` returned by this page's Save/Run, and apply
-only increasing `seq` values. Keep the last applied sequence as `after` for
-an exact retry. Render every status, artifact content, and run output as text
-with textarea `.value`, `textContent`, or text nodes, never as markup. Use a
-block only when running the code teaches something a static snippet cannot.
-Terminal experiments remain first-class whenever the learner should inspect,
-combine, or explore beyond one bounded editor file.
+`file_rev`. Match ordinary replies to `request_id`; accept `run.output`,
+`run.exit`, and `run.error` only for the `run_id` returned by this page's
+Save/Run. Apply only increasing `seq` values from output and exit messages,
+and treat either `run.exit` or `run.error` as the end of the active Run state.
+Keep the last applied sequence as `after` for an exact retry. Render every
+status, artifact content, and run output as text with textarea `.value`,
+`textContent`, or text nodes, never as markup. Use a block only when running
+the code teaches something a static snippet cannot. Terminal experiments
+remain first-class whenever the learner should inspect, combine, or explore
+beyond one bounded editor file.
 
 ## Bridge conventions — wiring Check into pages
 

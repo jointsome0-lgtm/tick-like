@@ -408,8 +408,11 @@ with TestClient(app) as c:
           and '"op":"artifact.save_run","v":1' in agents_text
           and '"op":"run.cancel","v":1' in agents_text
           and 'base_rev: "absent"' in agents_text
+          and "`run.exit`, and `run.error`" in agents_text
           and "only increasing `seq` values" in agents_text
-          and "textarea `.value`, `textContent`, or text nodes" in agents_text
+          and "end of the active Run state" in agents_text
+          and "textarea `.value`" in agents_text
+          and "`textContent`, or text nodes" in agents_text
           and "static snippet cannot" in agents_text
           and "Terminal experiments" in agents_text
           and "remain first-class" in agents_text)
